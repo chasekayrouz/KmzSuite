@@ -1,0 +1,11 @@
+KmzSuite dependency notices
+
+KmzSuite is Copyright © 2026 Chase Kayrouz and released under the MIT License. The license text is in LICENSE (LICENSE.txt in the KmzSuite folder).
+
+Viewers bundle CPython, PySide6/Qt, shiboken6, pyqtgraph, NumPy, matplotlib, pyteomics, lxml, psims and dependencies. The converter bundles CPython, NumPy and olefile. KmzCoMet bundles CPython, PySide6/Qt, shiboken6, NumPy, pyteomics, lxml, psims, olefile, openpyxl and et-xmlfile. PyInstaller is the freezer. Full installed metadata (including exact versions) and available license texts are collected at build time in THIRD_PARTY_LICENSES (licenses/ in the KmzSuite folder); the source repository pins the same versions in requirements-build.lock. Components retain their respective copyrights and licenses.
+
+Qt and Qt for Python (PySide6, shiboken6) are used unmodified under the GNU LGPLv3 (Qt copyright: The Qt Company Ltd. and other contributors). They are dynamically linked: the Qt libraries remain separate, replaceable files in each app's Contents/Frameworks folder. THIRD_PARTY_LICENSES/Qt-PySide-license-terms contains the LGPLv3 and GPLv3 texts and SOURCE.txt, which names the exact bundled versions and where to download their complete source code. The CPython license is included. The restricted converter codec was informed by sciexwiff (MIT); its notice is included. See docs/third-party.md in the source repository for provenance.
+
+KmzViewer, Kmz2Viewer and KmzCoMet bundle an unmodified release of the PSI-MS controlled vocabulary (HUPO Proteomics Standards Initiative, https://github.com/HUPO-PSI/psi-ms-CV), licensed under CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/); its version, hash and attribution are in kmzcore/data/PSI-MS-ATTRIBUTION.txt.
+
+KmzViewer spectral exploration also bundles MSEntropy (Apache-2.0), h5py (BSD), and a pinned, attributed MotifDB compilation from MS2LDA. MotifDB source attribution and its compilation license are included with kmzviewer/data. Public reference spectra and optional DreaMS reference embeddings are downloaded separately from their named providers; they retain their original annotations, provenance and applicable source licenses. DreaMS model weights are not bundled.

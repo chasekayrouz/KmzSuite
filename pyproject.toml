@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kmzsuite"
+dynamic = ["version"]
+description = "Independent mass spectrometry viewers and a guarded X500 converter"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.14,<3.15"
+dependencies = ["PySide6>=6.6", "pyqtgraph>=0.13", "numpy>=1.26", "matplotlib>=3.8", "pyteomics>=4.7", "lxml>=5", "psims>=1.2", "olefile>=0.47", "openpyxl>=3.1.5,<4", "ms-entropy==1.5.3", "h5py==3.16.0"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+comet = []  # Kept as a compatible extra; desktop and CLI both include Excel output.
+
+[project.scripts]
+kmzviewer = "kmzviewer.__main__:main"
+kmz2viewer = "kmz2viewer.__main__:main"
+kmzconvert = "kmzconvert.cli:main"
+kmzcomet = "kmzcomet.cli:main"
+kmzcomet-app = "kmzcomet_app.__main__:main"
+
+[tool.setuptools.package-dir]
+kmzviewer = "Apps/KmzViewer/kmzviewer"
+kmz2viewer = "Apps/Kmz2Viewer/kmz2viewer"
+kmzcore = "Sources/KmzCore/kmzcore"
+kmzconvert_core = "Sources/KmzConvertCore/kmzconvert_core"
+kmzconvert = "Tools/KmzConvert/kmzconvert"
+kmzcomet = "Tools/KmzCoMet/kmzcomet"
+kmzcomet_app = "Apps/KmzCoMet/kmzcomet_app"
+
+[tool.setuptools.dynamic]
+version = {attr = "kmzcore.version.__version__"}
+
+[tool.setuptools.package-data]
+kmzviewer = ["data/*.json", "data/*.gz", "data/*.txt"]
+kmzcore = ["data/*.gz", "data/*.txt"]
+
+[tool.setuptools.packages.find]
+where = ["Apps/KmzViewer", "Apps/Kmz2Viewer", "Apps/KmzCoMet", "Sources/KmzCore", "Sources/KmzConvertCore", "Tools/KmzConvert", "Tools/KmzCoMet"]
+include = ["kmzviewer*", "kmz2viewer*", "kmzcore*", "kmzconvert*", "kmzcomet*"]
+
+[tool.pytest.ini_options]
+testpaths = ["Tests"]
+pythonpath = ["."]
+markers = ["integration: optional local acquisition coverage"]

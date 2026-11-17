@@ -1,0 +1,28 @@
+MotifDB resource for exploratory motif-overlap inspection
+
+Source: MS2LDA project, MS2LDA/MotifDB/motifDB.json
+https://github.com/vdhooftcompmet/MS2LDA/tree/1a708d66a6bfc9493a2735e7cae5fb0c3b02e8a3/MS2LDA/MotifDB
+Commit: 1a708d66a6bfc9493a2735e7cae5fb0c3b02e8a3
+Retrieved: 2026-11-13
+
+The upstream repository is MIT licensed; its license accompanies this resource
+as MOTIFDB-LICENSE.txt. This notice does not relabel all experimental datasets
+from which the motifs were derived as MIT licensed. Original motif-set names,
+annotations, experimental context and paper URLs are retained with each record.
+The source collections include GNPS and MassBank library-derived motifs and
+published organism/experiment-specific motif sets.
+
+References:
+MS2LDA 2.0: https://doi.org/10.1038/s41467-026-75038-0
+Archived framework: https://doi.org/10.5281/zenodo.16881225
+MotifDB: https://doi.org/10.1039/C8FD00235E
+
+Transformation: retain all 996 source MS2 motifs, remove nonfinite placeholder
+cells, and keep finite fragment/loss masses and weights without rounding. The
+unrelated MS1 placeholder is not used. Selected metadata fields are retained.
+No motifs are selected using a user's query or a known compound identity.
+
+KmzViewer computes transparent fragment/loss overlap against these existing
+motifs. It does not run MS2LDA topic inference or classify a molecular structure.
+Source motif labels can name a complete scaffold even when only a shared part
+matches a query; labels must therefore be interpreted as hypotheses.

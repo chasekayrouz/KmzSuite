@@ -1,0 +1,18 @@
+PSI-MS controlled vocabulary for offline mzML reading
+
+Source: HUPO-PSI psi-ms-CV release v4.2.17, psi-ms.obo
+https://github.com/HUPO-PSI/psi-ms-CV/releases/download/v4.2.17/psi-ms.obo
+data-version: 4.2.17 (released 2026-11-11)
+SHA-256 of the uncompressed file:
+354b666d5f7277686f0c340d6d583f43021157563bde9ff61eb704d3566ffcf8
+Retrieved: 2026-11-15
+
+The PSI-MS controlled vocabulary is licensed under the Creative Commons
+Attribution 4.0 International License (https://creativecommons.org/licenses/by/4.0/).
+Copyright remains with the HUPO Proteomics Standards Initiative and the
+vocabulary's contributors. The file is unmodified; it is only gzip-compressed
+(psi-ms.obo.gz).
+
+KmzViewer, Kmz2Viewer and KmzCoMet read it through psims so that mzML parsing
+never needs the network and every application accepts the same accessions.
+Refresh it with scripts/update_psi_ms.py.

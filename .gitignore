@@ -1,0 +1,30 @@
+.build/
+.venv/
+.local/
+.cache/
+build/
+dist/
+review-bundle/
+TestData/Local/*
+!TestData/Local/.gitkeep
+/FromChase/
+# Private native scientific acquisitions, wherever placed in this checkout.
+*.[wW][iI][fF][fF]
+*.[wW][iI][fF][fF].[sS][cC][aA][nN]
+*.[dD][aA][dD].[sS][cC][aA][nN]
+*.[dD][aA][dD].[sS][iI][dD][xX]
+*.timeseries.data
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.DS_Store
+*.log
+
+# Optional in-place shared WIFF codec extension (formerly CoMet-only)
+Sources/KmzConvertCore/kmzconvert_core/_native*.so
+Sources/KmzConvertCore/kmzconvert_core/_native*.pyd
+Tools/KmzCoMet/kmzcomet/_native*.so
+Tools/KmzCoMet/kmzcomet/_native*.pyd
+Apps/KmzViewer/kmzviewer/_native*.so
+Apps/KmzViewer/kmzviewer/_native*.pyd
