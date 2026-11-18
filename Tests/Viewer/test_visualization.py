@@ -195,12 +195,25 @@ def _double_click(panel, scene_pos):
     QApplication.processEvents()
 
 
+def _settle_clicks(panel):
+    """Outlast the double-click window and any pending single-click emphasis.
+
+    The emphasis timer can fire well after the interval on a loaded runner, so a
+    fixed wait alone could assert before (or miss) its commit.
+    """
+    QTest.qWait(QApplication.doubleClickInterval() + 20)
+    deadline = time.monotonic() + 5
+    while panel._emphasis_timer.isActive() and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert not panel._emphasis_timer.isActive()
+
+
 def _single_click(panel, scene_pos):
     viewport = panel.view.viewport()
     pos = panel.view.mapFromScene(scene_pos)
     QTest.mouseMove(viewport, pos)
     QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, pos=pos)
-    QTest.qWait(QApplication.doubleClickInterval() + 20)
+    _settle_clicks(panel)
 
 
 def _drag(viewport, start, end):
@@ -312,12 +325,12 @@ def test_overlay_line_legend_emphasis_and_visibility(viewer, qapp):
     expected_scan = panel._hit(panel.view.mapToScene(panel.view.mapFromScene(point)))
     count = len(scans)
     _double_click(panel, point)
-    QTest.qWait(QApplication.doubleClickInterval() + 20)
+    _settle_clicks(panel)
     assert window.session.emphasized == {ids[1]}
     assert len(scans) > count and scans[-1][0] == expected_scan[0]
     assert scans[-1][1] == pytest.approx(expected_scan[1], abs=.02)
     _double_click(panel, panel._samples[ids[0]].sceneBoundingRect().center())
-    QTest.qWait(QApplication.doubleClickInterval() + 20)
+    _settle_clicks(panel)
     assert window.session.emphasized == unchanged
     assert _visibility(window) == visibility
     # Base-color edits keep emphasis and fill independent, and preserve manual Y.
@@ -334,7 +347,7 @@ def test_overlay_line_legend_emphasis_and_visibility(viewer, qapp):
     _double_click(panel, plot.getViewBox().mapViewToScene(QPointF(3.5, 120.)))
     assert scans
     _pan_and_zoom(panel, plot)
-    QTest.qWait(QApplication.doubleClickInterval() + 20)
+    _settle_clicks(panel)
     assert window.session.emphasized == unchanged
     assert _visibility(window) == visibility
     # Stack mode renders normally while keeping the Overlay session state.
