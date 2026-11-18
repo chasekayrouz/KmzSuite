@@ -8,21 +8,16 @@ final class SupportTests: XCTestCase {
         XCTAssertEqual(SuiteTool.comet.symbol, "tablecells")
         XCTAssertEqual(SuiteTool.comet.application(in: URL(fileURLWithPath: "/fixture")).lastPathComponent, "KmzCoMet.app")
     }
-    func testPortableToolLookupDoesNotFallBackToSiblings() throws {
+    func testToolLookupUsesTheLauncherFolder() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        for embedded in [false, true] {
-            let app = root.appendingPathComponent(embedded ? "Portable.app" : "Sibling.app")
-            let contents = app.appendingPathComponent("Contents")
-            try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
-            let info: [String: Any] = ["CFBundleIdentifier": "test." + UUID().uuidString,
-                                      "CFBundlePackageType": "APPL", "KMZContainsTools": embedded]
-            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
-                .write(to: contents.appendingPathComponent("Info.plist"))
-            let bundle = try XCTUnwrap(Bundle(url: app))
-            XCTAssertEqual(NativeSupport.toolDirectory(for: bundle).standardizedFileURL,
-                           (embedded ? contents.appendingPathComponent("Helpers", isDirectory: true) : root).standardizedFileURL)
-        }
+        let contents = root.appendingPathComponent("KmzSuite.app/Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let info: [String: Any] = ["CFBundleIdentifier": "test." + UUID().uuidString, "CFBundlePackageType": "APPL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: contents.appendingPathComponent("Info.plist"))
+        let bundle = try XCTUnwrap(Bundle(url: root.appendingPathComponent("KmzSuite.app")))
+        XCTAssertEqual(NativeSupport.toolDirectory(for: bundle).standardizedFileURL, root.standardizedFileURL)
     }
     func testOutputRepresentationNamesAndNormalization() {
         let folder = URL(fileURLWithPath: "/fixture", isDirectory: true)

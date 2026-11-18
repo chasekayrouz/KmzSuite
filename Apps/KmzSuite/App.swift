@@ -13,9 +13,6 @@ import KmzMacSupport
         .commands {
             CommandGroup(replacing: .help) {
                 Button("KmzSuite Manual") { NativeSupport.showManual("KmzSuite") }
-                if NativeSupport.containsTools {
-                    Button("Installation & Getting Started") { NativeSupport.showManual("INSTALL") }
-                }
             }
         }
     }
@@ -48,9 +45,7 @@ struct LauncherView: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(SuiteTheme.border, lineWidth: 1))
             }
             HStack {
-                Text(NativeSupport.containsTools
-                     ? "All four tools are included in this KmzSuite app."
-                     : "Keep the five apps together in the distribution folder.")
+                Text("Keep the five apps together in the distribution folder.")
                     .font(.caption).foregroundStyle(SuiteTheme.muted)
                 Spacer()
                 Button { refreshed.toggle() } label: { Image(systemName: "arrow.clockwise") }

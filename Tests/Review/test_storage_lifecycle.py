@@ -142,6 +142,43 @@ def test_launcher_waits_for_child_diagnostics_before_shutdown(tmp_path, monkeypa
         assert failure['running_apps'][0]['pid'] == 123
 
 
+@pytest.mark.parametrize('scenario', ['quits', 'still-running'])
+def test_native_smoke_waits_for_launched_siblings_to_quit(tmp_path, monkeypatch, scenario):
+    """release.py requires every app stopped right after validation; a sibling may still be quitting."""
+    from types import SimpleNamespace
+    import installed_apps
+    import macos_apps
+    native = load('smoke-native')
+    siblings = ['KmzViewer', 'Kmz2Viewer', 'KmzConvert', 'KmzCoMet']
+
+    def launcher(directory, app, *arguments):
+        for name in siblings:
+            (directory / name).mkdir(parents=True)
+            (directory / name / 'result.json').write_text('{"ok": true}')
+        (directory / 'result.json').write_text(json.dumps({'ok': True, 'launched': siblings}))
+        return {'ok': True, 'launched': siblings}
+
+    elapsed = [0.]
+    monkeypatch.setattr(native, 'native', launcher)
+    monkeypatch.setattr(native, 'ROOT', tmp_path)  # No local acquisitions: the launcher stage only.
+    monkeypatch.setattr(installed_apps, 'time', SimpleNamespace(
+        monotonic=lambda: elapsed[0], sleep=lambda seconds: elapsed.__setitem__(0, elapsed[0] + seconds)))
+    monkeypatch.setattr(macos_apps, 'running_apps', lambda _: [(123, '/test/KmzCoMet.app/Contents/MacOS/KmzCoMet')]
+                        if elapsed[0] < 2 or scenario == 'still-running' else [])
+    monkeypatch.setattr(sys, 'argv', ['smoke-native.py', '--distribution', str(tmp_path)])
+    runs = tmp_path / '.local/validation/native'
+    if scenario == 'quits':
+        native.main()
+        assert 2 <= elapsed[0] < 3
+        assert json.loads(next(runs.glob('*/validation.json')).read_text())['ok']
+    else:
+        with pytest.raises(TimeoutError, match='did not shut down'):
+            native.main()
+        failure = json.loads(next(runs.glob('*/launcher/failure.json')).read_text())
+        assert failure['phase'] == 'shutdown' and failure['running_apps'][0]['pid'] == 123
+        assert not list(runs.glob('*/validation.json'))
+
+
 @pytest.mark.parametrize('scenario', ['missing-result', 'failed-result', 'shutdown-timeout'])
 def test_live_smoke_failure_preserves_cleanup_candidates(repository, monkeypatch, scenario):
     from types import SimpleNamespace
@@ -255,6 +292,55 @@ def test_tracked_files_and_running_checkout_apps_stop_cleanup(repository, monkey
     monkeypatch.setattr(cleanup, 'running_apps', lambda p: [(123, 'running')])
     with pytest.raises(RuntimeError, match='Quit'):
         cleanup.candidates(repository, 'deep', {})
+
+
+@pytest.mark.parametrize('interpreter', [sys.version_info, (3, 9)])
+@pytest.mark.parametrize('residue', ['metadata', 'persistent', 'unexpected', 'symlink', 'directory'])
+def test_cleanup_retries_only_finder_metadata_during_removal(repository, tmp_path, monkeypatch, residue, interpreter):
+    import os
+    from types import SimpleNamespace
+    # Cleanup also runs on the system Python, whose rmtree has only onerror.
+    monkeypatch.setattr(cleanup, 'sys', SimpleNamespace(version_info=interpreter))
+    stage = repository / 'build/stage'
+    stage.mkdir(parents=True)
+    (stage / 'staging.txt').write_text('disposable')
+    (repository / 'installed').mkdir()
+    (repository / 'installed/.kmz-install.json').write_text('{"versions": {}}')
+    protected = tmp_path / 'keep.txt'
+    protected.write_text('original')
+    monkeypatch.setattr(cleanup, 'ROOT', repository)
+    monkeypatch.setattr(cleanup, 'check_install', lambda _: repository / 'installed')
+    monkeypatch.setattr(cleanup, 'smoke', lambda directory, output: None)
+    monkeypatch.setattr(cleanup, 'time', SimpleNamespace(sleep=lambda seconds: None))
+    monkeypatch.setattr(sys, 'argv', ['cleanup.py', '--mode', 'standard', '--apply'])
+    rmdir, writes = os.rmdir, []
+
+    def finder_writes_late(path, *, dir_fd=None):
+        # Finder drops its state into the emptied folder just before each rmdir.
+        if Path(path).name == 'stage' and (residue == 'persistent' or not writes):
+            writes.append(path)
+            late = stage / ('unexpected.txt' if residue == 'unexpected' else '.DS_Store')
+            if residue == 'symlink':
+                late.symlink_to(protected)
+            elif residue == 'directory':
+                late.mkdir()
+            else:
+                late.write_bytes(b'Finder state')
+        rmdir(path, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, 'rmdir', finder_writes_late)
+    if residue == 'metadata':
+        cleanup.main()
+        assert not (repository / 'build').exists() and len(writes) == 1
+    else:
+        with pytest.raises(OSError, match='not empty'):
+            cleanup.main()
+        late = {p.name for p in stage.iterdir()}
+        assert late == ({'unexpected.txt'} if residue == 'unexpected' else {'.DS_Store'})
+        assert len(writes) == (6 if residue == 'persistent' else 1)
+    receipt = json.loads(next((repository / '.local/cleanup-receipts').glob('*.json')).read_text())
+    assert [p['path'] for p in receipt['deleted']] == (['build'] if residue == 'metadata' else [])
+    assert protected.read_text() == 'original'
 
 
 def test_isolation_failure_restores_every_checkout_folder(tmp_path, monkeypatch):

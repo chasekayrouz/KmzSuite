@@ -83,9 +83,8 @@ def test_invalid_startup_mass_is_rejected(mass):
         startup_arguments('ms2', [f'--precursor-mz={mass}'])
 
 
-@pytest.mark.parametrize('directory', ['Installed suite', 'Portable.app/Contents/Helpers'])
-def test_frozen_launch_uses_exact_sibling_and_new_instance(tmp_path, monkeypatch, directory):
-    folder = tmp_path / directory
+def test_frozen_launch_uses_exact_sibling_and_new_instance(tmp_path, monkeypatch):
+    folder = tmp_path / 'Installed suite'
     executable = folder / 'KmzViewer.app/Contents/MacOS/KmzViewer'
     target = folder / 'Kmz2Viewer.app/Contents/MacOS/Kmz2Viewer'
     target.parent.mkdir(parents=True)

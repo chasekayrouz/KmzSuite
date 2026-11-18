@@ -1,0 +1,33 @@
+# Runs ./scripts/test.sh on GitHub's macOS arm64 runners. The private development
+# repository carries this file too, but its job runs only in public repositories.
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    if: ${{ !github.event.repository.private }}
+    # The oldest macOS the apps support (MINIMUM_MACOS).
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # test.sh downloads uv-managed CPython 3.14 (.python-version) and keeps uv's
+      # cache inside the checkout, so the action's own cache stays off.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - run: ./scripts/test.sh

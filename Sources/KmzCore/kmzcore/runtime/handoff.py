@@ -20,7 +20,6 @@ def ms2_command(paths=(), *, precursor_mz=None) -> list[str]:
         arguments = ['--precursor-mz', repr(precursor_mass(str(precursor_mz)))]
     arguments += ['--', *(str(Path(path).resolve()) for path in paths)]
     if getattr(sys, 'frozen', False):
-        # Works for both the four-app install and portable Contents/Helpers tools.
         source = Path(sys.executable).resolve().parents[2]
         sibling = source.parent / 'Kmz2Viewer.app'
         if not (sibling / 'Contents/MacOS/Kmz2Viewer').is_file():

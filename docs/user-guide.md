@@ -252,4 +252,4 @@ rm -rf .venv
   appear as separate features. PCA is for exploration.
 - **Formulas, spectral matches, motifs, DreaMS and GNPS results** are hypotheses to
   investigate, not identifications.
-- KmzSuite runs only on Apple Silicon Macs with macOS 26 or later.
+- KmzSuite runs only on Apple Silicon Macs with macOS 15 or later.

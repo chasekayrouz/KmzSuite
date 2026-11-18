@@ -45,19 +45,11 @@ public struct ConversionProgress: Equatable {
 }
 
 public enum NativeSupport {
-    /// Private portable builds contain helpers; ordinary installs retain siblings.
-    /// The marker is authoritative, so a damaged portable copy never opens an
-    /// unrelated sibling installation as a fallback.
+    /// The suite's tools are the launcher's siblings in the KmzSuite folder.
     public static func toolDirectory(for bundle: Bundle) -> URL {
-        if bundle.object(forInfoDictionaryKey: "KMZContainsTools") as? Bool == true {
-            return bundle.bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
-        }
-        return bundle.bundleURL.deletingLastPathComponent()
+        bundle.bundleURL.deletingLastPathComponent()
     }
     public static var distribution: URL { toolDirectory(for: .main) }
-    public static var containsTools: Bool {
-        Bundle.main.object(forInfoDictionaryKey: "KMZContainsTools") as? Bool == true
-    }
     public static var converter: URL? {
         Bundle.main.resourceURL?.appendingPathComponent("Converter/kmzconvert")
     }

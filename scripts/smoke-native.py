@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
+from installed_apps import wait_result
 from kmzcore.version import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,8 +55,10 @@ def main():
     root.mkdir(parents=True)
     result = native(root / 'launcher', 'KmzSuite', '--smoke-launch-all')
     assert result['ok'] and set(result['launched']) == {'KmzViewer', 'Kmz2Viewer', 'KmzConvert', 'KmzCoMet'}, result
-    for name in result['launched']:
-        assert read_result(root / 'launcher' / name)['ok']
+    # The launcher exits while its siblings still run. Wait for every sibling's
+    # result and for every app to quit (bounded, never killed) before going on.
+    wait_result(root / 'launcher/result.json', DIST,
+                additional_results=[root / 'launcher' / name / 'result.json' for name in result['launched']])
     summaries = [{'case': 'launcher-and-independent-siblings', 'ok': True}]
     entry = ROOT / 'TestData/Local/acquisition-01.wiff'
     if entry.exists():

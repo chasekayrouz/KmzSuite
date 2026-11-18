@@ -23,7 +23,7 @@ unless you choose an online search.
 ## Requirements
 
 - A Mac with Apple Silicon (M1 or newer). Intel Macs are not supported.
-- macOS 26 or later.
+- macOS 15 or later.
 - About 1 GB of free disk space, plus space for your data.
 
 ## Installation

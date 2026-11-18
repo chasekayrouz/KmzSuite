@@ -2,18 +2,23 @@
 """Review or reclaim declared local artifacts; protect installed apps and inputs."""
 import argparse
 from datetime import datetime, timezone
+import errno
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
+import time
 
 from installed_apps import installed_directory, smoke
 from macos_apps import APPS, bundle_hashes, running_apps, validate_bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW_SUFFIXES = {'.wiff', '.wiff2', '.scan', '.mzml'}
+FINDER_METADATA = '.DS_Store'
 
 
 def safe_path(root, relative):
@@ -107,6 +112,35 @@ def allocated(path):
     return total
 
 
+def remove_directory(root, path, attempts=5):
+    """rmtree that retries a folder only when Finder recreated .DS_Store in it."""
+    def retry(function, target, error):
+        if function is not os.rmdir or getattr(error, 'errno', None) != errno.ENOTEMPTY:
+            raise error
+        folder = safe_path(root, Path(target).relative_to(root))
+        for _ in range(attempts):
+            with os.scandir(folder) as entries:
+                residue = list(entries)
+            # Any other late content, link or folder is preserved and stops cleanup.
+            if any(e.name != FINDER_METADATA or not e.is_file(follow_symlinks=False) for e in residue):
+                raise error
+            for entry in residue:
+                Path(entry.path).unlink(missing_ok=True)
+                print('Removed recreated Finder metadata:', Path(entry.path).relative_to(root).as_posix(), flush=True)
+            try:
+                os.rmdir(folder)
+                return
+            except OSError as again:
+                if again.errno != errno.ENOTEMPTY:
+                    raise
+            time.sleep(.2)
+        raise error
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:  # The documented /usr/bin/python3 predates onexc.
+        shutil.rmtree(path, onerror=lambda function, target, info: retry(function, target, info[1]))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=('standard', 'deep'), default='standard')
@@ -164,7 +198,7 @@ def main():
     log.write_text(json.dumps(receipt, indent=2) + '\n')
     for path, detail in zip(plan, details):
         if path.is_dir():
-            shutil.rmtree(path)
+            remove_directory(ROOT, path)
         else:
             path.unlink()
         receipt['deleted'].append(detail)

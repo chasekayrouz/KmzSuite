@@ -14,6 +14,28 @@ from kmzcore.runtime import resource_path
 from kmzcore.runtime.synthetic import write_fixture
 
 
+def check_full_view_shortcut(app, window, widget, plot, zoom):
+    """Press F in a focused plot area; it must reset the range only in the active window."""
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    plot.setXRange(*zoom, padding=0)
+    widget.setFocus()
+    app.processEvents()
+    # Use the rule of Qt's shortcut map: the active window and its focus widget.
+    # macOS makes a window key before it reports the application active, so the
+    # application state can lag an activation that has already arrived.
+    active = window.isActiveWindow() and widget.hasFocus()
+    app.sendEvent(widget, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F, Qt.KeyboardModifier.NoModifier))
+    app.sendEvent(widget, QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_F, Qt.KeyboardModifier.NoModifier))
+    if active:
+        assert plot.viewRange()[0][0] < zoom[0] and plot.viewRange()[0][1] > zoom[1], (zoom, plot.viewRange()[0])
+        return 'F active full view'
+    # The launcher smoke starts sibling apps concurrently.
+    # Their background windows must not consume shortcuts.
+    assert all(abs(a-b) < 1e-6 for a, b in zip(plot.viewRange()[0], zoom)), (zoom, plot.viewRange()[0])
+    return 'F inactive window ignored'
+
+
 def run_smoke(app, window, key, destination):
     output = Path(destination).resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -183,29 +205,13 @@ def run_smoke(app, window, key, destination):
 
                 # Deliver real key events through Qt's shortcut map after focusing
                 # each plot area; exercise the packaged F shortcut independently.
-                from PySide6.QtCore import QEvent, Qt
-                from PySide6.QtGui import QKeyEvent
                 areas = [(window.spectrum.view if key == 'ms1' else window.spectrum.plot,
                           window.spectrum.plot, (110, 120) if key == 'ms1' else (220, 230))]
                 if key == 'ms1':
                     areas.insert(0, (window.plots.view, window.plots._plots()[0], (1.1, 1.2)))
                 window.activateWindow()
                 for widget, plot, zoom in areas:
-                    plot.setXRange(*zoom, padding=0)
-                    widget.setFocus()
-                    app.processEvents()
-                    active = (app.applicationState() == Qt.ApplicationState.ApplicationActive
-                              and window.isActiveWindow() and widget.hasFocus())
-                    app.sendEvent(widget, QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_F, Qt.KeyboardModifier.NoModifier))
-                    app.sendEvent(widget, QKeyEvent(QEvent.Type.KeyRelease, Qt.Key.Key_F, Qt.KeyboardModifier.NoModifier))
-                    if active:
-                        assert plot.viewRange()[0][0] < zoom[0] and plot.viewRange()[0][1] > zoom[1], (key, zoom, plot.viewRange()[0])
-                        state.setdefault('f_checks', set()).add('F active full view')
-                    else:
-                        # The launcher smoke starts sibling apps concurrently.
-                        # Their background windows must not consume shortcuts.
-                        assert all(abs(a-b) < 1e-6 for a, b in zip(plot.viewRange()[0], zoom)), (key, zoom, plot.viewRange()[0])
-                        state.setdefault('f_checks', set()).add('F inactive window ignored')
+                    state.setdefault('f_checks', set()).add(check_full_view_shortcut(app, window, widget, plot, zoom))
 
                 window.grab().save(str(output / f'{key}.png'))
                 from PySide6.QtCore import Qt

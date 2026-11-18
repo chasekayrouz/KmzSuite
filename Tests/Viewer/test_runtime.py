@@ -126,6 +126,35 @@ def test_documents_queue_deduplicate_and_retry(app, tmp_path, key):
         until(lambda: window.runtime.closed)
 
 
+@pytest.mark.parametrize('activation', ['window-before-application', 'other-window'])
+def test_full_view_shortcut_check_follows_the_shortcut_map(app, tmp_path, monkeypatch, activation):
+    """macOS makes a window key before reporting the application active; F already works then."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QWidget
+    from kmzcore.runtime.smoke import check_full_view_shortcut
+    from kmzcore.runtime.synthetic import write_fixture
+    from kmzviewer.gui.app import MainWindow
+    path = tmp_path / 'one.mzML'
+    write_fixture(path)
+    window, other = MainWindow(), QWidget()
+    try:
+        window.show()
+        assert not window.load_paths_sync([str(path)])
+        until(lambda: bool(window.plots._plots()))
+        target = other if activation == 'other-window' else window
+        target.show()
+        target.activateWindow()
+        until(lambda: QApplication.activeWindow() is target)
+        if activation == 'window-before-application':
+            monkeypatch.setattr(app, 'applicationState', lambda: Qt.ApplicationState.ApplicationInactive)
+        expected = 'F active full view' if target is window else 'F inactive window ignored'
+        assert check_full_view_shortcut(app, window, window.plots.view, window.plots._plots()[0], (1.1, 1.2)) == expected
+    finally:
+        other.close()
+        window.close()
+        until(lambda: window.runtime.closed)
+
+
 def test_ms2_cancellation_inside_stream_and_fallback(tmp_path, monkeypatch):
     import kmz2viewer.index as index
     from pyteomics import mzml

@@ -1,9 +1,9 @@
 """Canonical public version and release metadata for every KmzSuite component."""
 
-__version__ = "0.12.0"
+__version__ = "0.12.1"
 # Oldest macOS release the apps declare (LSMinimumSystemVersion). Every bundled
 # binary must support it; packaging and the release audit enforce both.
-MINIMUM_MACOS = "26.0"
+MINIMUM_MACOS = "15.0"
 COPYRIGHT = "Copyright © 2026 Chase Kayrouz"
 LICENSE_NOTICE = COPYRIGHT + ". MIT License."
 
