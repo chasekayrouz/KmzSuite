@@ -1,12 +1,12 @@
 # KmzSuite
 
 Mass spectrometry tools for Macs with Apple Silicon. KmzSuite converts SCIEX X500
-WIFF acquisitions to standard mzML, displays chromatograms and spectra, browses
-MS/MS scans and compares MS1 features across runs.
+WIFF and Agilent MassHunter (`.d`) acquisitions to standard mzML, displays
+chromatograms and spectra, browses MS/MS scans and compares MS1 features across runs.
 
 | App | What it does |
 | --- | --- |
-| **KmzConvert** | Converts SCIEX X500 WIFF acquisitions to indexed mzML (app and `kmzconvert` command) |
+| **KmzConvert** | Converts SCIEX X500 WIFF and Agilent TOF/Q-TOF `.d` acquisitions to indexed mzML (app and `kmzconvert` command) |
 | **KmzViewer** | Plots TIC, BPC, EIC and UV (DAD) chromatograms; compares MS1 spectra; exports SVG figures; searches related MS/MS spectra |
 | **Kmz2Viewer** | Browses and filters MS/MS scans; suggests formulas for mass differences |
 | **KmzCoMet** | Compares MS1 ion features across WIFF runs; plots EICs and PCA; exports CSV and Excel |
@@ -16,7 +16,9 @@ The viewers open any standard mzML file. Each app runs on its own and works offl
 unless you choose an online search.
 
 > **Status:** research software under active development. KmzConvert supports only
-> the SCIEX X500 data layouts it has been checked against and refuses anything else.
+> the SCIEX X500 data layouts it has been checked against, and Agilent TOF/Q-TOF
+> profile data whose stored scan summaries it reproduces exactly (checked on a 6545
+> and a 6546); it refuses anything else.
 > Formula suggestions and spectral matches are leads to investigate, not
 > identifications. See [Limitations](docs/user-guide.md#limitations).
 
@@ -148,6 +150,7 @@ To convert from the Terminal instead of the app:
 
 ```sh
 /Applications/KmzSuite/kmzconvert sample.wiff -o sample.mzML
+/Applications/KmzSuite/kmzconvert run.d -o run.mzML      # Agilent .d folder
 ```
 
 If you built from source, the command is `~/Applications/KmzSuite/kmzconvert`.

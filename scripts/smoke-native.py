@@ -141,6 +141,7 @@ def main():
         # Both frozen converter runtimes carry the shared native codec.
         for runtime in (DIST / 'Converter', DIST / 'KmzConvert.app/Contents/Resources/Converter'):
             assert list(runtime.rglob('kmzconvert_core/_native*.so')), runtime
+            assert list(runtime.rglob('kmzconvert_core/_agilent*.so')), runtime
         version = subprocess.run([str(cli), '--version'], cwd=root, capture_output=True, text=True)
         assert version.returncode == 0 and version.stdout.strip() == __version__
         inspected = subprocess.run([str(cli), str(entry), '--inspect'], cwd=root, capture_output=True, text=True)

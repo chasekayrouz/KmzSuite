@@ -27,6 +27,9 @@ def main():
     from kmzconvert_core.native import ACCELERATED
     if not ACCELERATED:
         raise SystemExit('Shared native WIFF codec (KmzConvert/KmzCoMet) was not built; rerun the root build with the C toolchain available.')
+    from kmzconvert_core.agilent import ACCELERATED as AGILENT_ACCELERATED
+    if not AGILENT_ACCELERATED:
+        raise SystemExit('Agilent profile decoders (KmzConvert) were not built; rerun the root build with the C toolchain available.')
     from kmzviewer.mzml_direct import ACCELERATED as VIEWER_ACCELERATED
     if not VIEWER_ACCELERATED:
         raise SystemExit('KmzViewer native mzML decoder was not built; rerun the root build with the C toolchain available.')

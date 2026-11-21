@@ -86,6 +86,7 @@ def main():
             parser.error(f'Only regular source files can enter a review archive: {name}')
         if (path.name.lower().startswith(('.env', 'credentials', 'secrets'))
                 or path.suffix.lower() in {'.wiff', '.wiff2', '.scan', '.pem', '.key', '.p12'}
+                or any(part.lower().endswith('.d') for part in Path(name).parts[:-1])
                 or path.suffix.lower() == '.mzml' and not name.startswith('TestData/Regression/')):
             parser.error(f'Private/data/credential file cannot enter a review archive: {name}')
         files[name] = path.read_bytes()
@@ -99,6 +100,8 @@ def main():
             path = checked_path(evidence_root / relative, parser)
             if not path.is_file():
                 parser.error(f'Requested evidence file is missing or not regular: {requested}')
+            if any(part.lower().endswith('.d') for part in relative.parts[:-1]):
+                parser.error(f'Files inside acquisition folders cannot be evidence: {requested}')
             if path.suffix.lower() not in EVIDENCE_SUFFIXES:
                 parser.error(f'Unsupported evidence type (raw datasets/arrays are excluded): {requested}')
             if path.stat().st_size > 64 * 1024 * 1024:

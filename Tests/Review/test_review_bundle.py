@@ -58,7 +58,7 @@ def test_selected_ignored_results_are_complete_and_hashed(repository, monkeypatc
 
 
 @pytest.mark.parametrize('name', ['raw.wiff', 'raw.wiff.scan', 'raw.WIFF', 'raw.WIFF.SCAN', 'raw.mzML', 'arrays.npz', 'secrets.json',
-                                 'cache/__pycache__/output.json', '../outside.json'])
+                                 'cache/__pycache__/output.json', '../outside.json', 'run.D/AcqData/Devices.json'])
 def test_evidence_rejects_raw_state_and_traversal(repository, monkeypatch, name):
     path = repository / '.local/results' / name
     path.parent.mkdir(parents=True, exist_ok=True)

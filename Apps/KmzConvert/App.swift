@@ -56,10 +56,10 @@ struct ConvertView: View {
         ScrollView {
         VStack(alignment: .leading, spacing: 12) {
             Text("KmzConvert").font(.largeTitle.bold())
-            Text("SCIEX X500 sidecars → indexed mzML").foregroundStyle(SuiteTheme.muted)
+            Text("SCIEX X500 WIFF and Agilent .d → indexed mzML").foregroundStyle(SuiteTheme.muted)
             GroupBox {
                 HStack {
-                    Text("Input queue · \(model.inputs.count) file(s)").font(.headline)
+                    Text("Input queue · \(model.inputs.count) input(s)").font(.headline)
                     Spacer()
                     Button("Add Files…") { model.chooseInput() }.disabled(model.running)
                     Button("Remove") {
@@ -68,7 +68,7 @@ struct ConvertView: View {
                     }.disabled(model.running || selectedInputs.isEmpty)
                 }
                 if model.inputs.isEmpty {
-                    Text("Drop WIFF or WIFF2 files here. Matching sidecars must be beside each input.")
+                    Text("Drop WIFF or WIFF2 files, or Agilent .d folders, here. WIFF sidecars must be beside each WIFF file.")
                         .foregroundStyle(SuiteTheme.muted).frame(maxWidth: .infinity, minHeight: 110)
                 } else {
                     List(selection: $selectedInputs) {

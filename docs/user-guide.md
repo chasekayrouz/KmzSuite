@@ -5,7 +5,7 @@ This guide walks through each app step by step. To install KmzSuite, follow the
 **Help** menu.
 
 - [Before you start](#before-you-start)
-- [Convert WIFF files: KmzConvert](#convert-wiff-files-kmzconvert)
+- [Convert acquisitions: KmzConvert](#convert-acquisitions-kmzconvert)
 - [View chromatograms and spectra: KmzViewer](#view-chromatograms-and-spectra-kmzviewer)
 - [Browse MS/MS scans: Kmz2Viewer](#browse-msms-scans-kmz2viewer)
 - [Compare runs: KmzCoMet](#compare-runs-kmzcomet)
@@ -23,6 +23,8 @@ open **KmzSuite** and click **Open** next to any tool.
 - A SCIEX acquisition is a `.wiff` file plus a `.wiff.scan` file with the same
   name. Keep both in the same folder. A `.wiff2` file works as long as those two
   files are beside it.
+- An Agilent MassHunter acquisition is a folder ending in `.d`. Use the whole
+  folder; don't pick files inside it.
 - The viewers open `.mzML` files, both those made by KmzConvert and standard mzML
   from other software.
 - KmzSuite never changes your original files.
@@ -35,11 +37,11 @@ open **KmzSuite** and click **Open** next to any tool.
 4. Compare features across many runs with **KmzCoMet**, which reads WIFF files
    directly.
 
-## Convert WIFF files: KmzConvert
+## Convert acquisitions: KmzConvert
 
 1. Open **KmzConvert**.
-2. Click **Add Files** and choose one or more `.wiff` files, or drag them into the
-   list.
+2. Click **Add Files** and choose one or more `.wiff` files or Agilent `.d` folders,
+   or drag them into the list.
 3. Choose an output mode:
    - **Full Profile** (default) keeps all the data. Use it for analysis and
      archiving.
@@ -51,7 +53,7 @@ open **KmzSuite** and click **Open** next to any tool.
 6. Click **Reveal Outputs** to see the new files in Finder.
 
 Output files are named after the input: `sample.mzML` (Full Profile) or
-`sample.sp.mzML` (Sparse Profile).
+`sample.sp.mzML` (Sparse Profile). An Agilent `run.d` folder becomes `run.mzML`.
 
 Good to know:
 
@@ -69,6 +71,10 @@ Good to know:
   one per line, as `expected_mz;RT_minutes`, for example `195.0877;3.2`. KmzConvert
   shifts all MS1 masses by one fitted ppm offset and adds `.mc` to the file name.
   MS2 masses are not corrected.
+- **Agilent `.d` folders** convert in Full Profile only, so far. Sparse Profile and
+  mass correction report an error for them. Masses use the instrument's own
+  calibration: the per-scan calibration, which includes reference-mass correction,
+  when the folder has one, otherwise its default calibration.
 
 **From the Terminal.** The installed `kmzconvert` command does the same work:
 
@@ -78,6 +84,7 @@ cd ~/Data                                       # the folder with your files
 /Applications/KmzSuite/kmzconvert sample.wiff --profile sparse     # writes sample.sp.mzML
 /Applications/KmzSuite/kmzconvert sample.wiff --list-samples       # list stored samples
 /Applications/KmzSuite/kmzconvert sample.wiff --sample 2 -o out.mzML   # writes out_2.mzML
+/Applications/KmzSuite/kmzconvert run.d                            # Agilent: writes run.mzML
 /Applications/KmzSuite/kmzconvert --help                           # all options
 ```
 
@@ -236,11 +243,18 @@ rm -rf .venv
 
 ## Limitations
 
-- **Conversion** supports SCIEX X500-series acquisitions from SCIEX OS 2.x:
+- **SCIEX conversion** supports X500-series acquisitions from SCIEX OS 2.x:
   positive-mode TOF MS profile data with data-dependent MS/MS, one period.
   Negative polarity, other instruments, WIFF2-only data, multiple periods and
   multi-sample files whose methods differ are refused. Precursor charge, isolation
   width and activation type are not decoded.
+- **Agilent conversion** supports MassHunter TOF and Q-TOF acquisitions saved with
+  profile data: MS1 and targeted MS/MS. It has been checked on a 6545 (MassHunter
+  B.08, negative targeted MS/MS) and a 6546 (MassHunter 10.1, positive MS1).
+  Data-dependent MS/MS and other models have not been tested. Centroid-only data,
+  triple quadrupoles, ion mobility (6560), All Ions MS/MS, older MassHunter
+  layouts and UV (DAD) data are refused or not exported. Isolation width and activation type
+  are not decoded, and Sparse Profile and mass correction are not available yet.
 - **Sparse Profile** omits weak signal (peaks that never exceed about 20 detector
   events) and trims faint peak tails. Use Full Profile for quantitative work.
 - **Mass correction** is a beta: one global offset per run, with no guarantee of

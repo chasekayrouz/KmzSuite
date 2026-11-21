@@ -63,7 +63,7 @@ def candidates(root, mode, retention):
             raise ValueError('Candidate directory contains golden data: ' + name)
         if running_apps(path):
             raise RuntimeError('Quit checkout-local apps before cleaning: ' + name)
-        if any(p.suffix.lower() in RAW_SUFFIXES for p in path.rglob('*') if not p.is_dir()):
+        if any((p / 'AcqData').is_dir() if p.is_dir() else p.suffix.lower() in RAW_SUFFIXES for p in path.rglob('*')):
             raise ValueError('Candidate contains acquisition files; preserve and inspect: ' + name)
         result.append(path)
     for item in retention.get('transient', []):

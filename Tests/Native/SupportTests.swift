@@ -30,6 +30,10 @@ final class SupportTests: XCTestCase {
         XCTAssertEqual(OutputProfile.sparse.title, "Sparse Profile v3")
         XCTAssertEqual(OutputProfile.full.suggestedOutputURL(for: folder.appendingPathComponent("sample.sp.wiff")).lastPathComponent, "sample.sp.mzML")
         XCTAssertEqual(OutputProfile.sparse.suggestedOutputURL(for: folder.appendingPathComponent("sample.sp.wiff")).lastPathComponent, "sample.sp.sp.mzML")
+        let agilent = OutputProfile.full.suggestedOutputURL(for: folder.appendingPathComponent("run.d", isDirectory: true))
+        XCTAssertEqual(agilent.path, "/fixture/run.mzML")
+        XCTAssertFalse(agilent.hasDirectoryPath)
+        XCTAssertEqual(OutputProfile.full.suggestedOutputURL(for: folder.appendingPathComponent("sample.wiff"), massCorrection: true).path, "/fixture/sample.mc.mzML")
     }
     func testProgressUsesLatestCompleteUpdateAndRejectsInvalidCounts() {
         let progress = ConversionProgress.parse("warning\rConverting 1/500 spectra\rConverting 251/500 spectra")

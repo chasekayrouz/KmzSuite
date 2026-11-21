@@ -11,6 +11,12 @@ ProteoWizard sources informed API and mzML mapping. Their implementation code,
 vendor SDKs, binaries and keys are not included. No network or vendor runtime
 is needed to convert an acquisition.
 
+The Agilent MassHunter reader was written from the public format notes of
+OpenARaw (`github.com/Sigilweaver/OpenARaw`,
+`af3fc542036eb8633468a60ed152945c509d92ca`, Apache-2.0) and rainbow (LGPL-3.0),
+and checked against each acquisition's own schema and stored summaries. No code
+from either project is included.
+
 Python runtime dependencies retain their installed notices. Build-time asset
 collection includes distribution metadata, available license files, CPython's
 license and explicit Qt/PySide LGPL/GPL terms. Viewer scientific dependencies are

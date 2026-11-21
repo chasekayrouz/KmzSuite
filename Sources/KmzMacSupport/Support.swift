@@ -8,7 +8,7 @@ public enum SuiteTool: String, CaseIterable, Identifiable {
         switch self {
         case .viewer: return "Chromatograms and MS1 spectra"
         case .viewer2: return "MS2 scans and mass differences"
-        case .convert: return "SCIEX X500 sidecars to mzML"
+        case .convert: return "SCIEX WIFF and Agilent .d to mzML"
         case .comet: return "Compare MS1 features across acquisitions"
         }
     }

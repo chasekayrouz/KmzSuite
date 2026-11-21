@@ -8,7 +8,9 @@ public enum OutputProfile: String, CaseIterable, Identifiable {
     public var detail: String { self == .full ? "Complete, authoritative profile mzML" : "Smaller, lossy MS1 representation for inspection" }
 
     public func suggestedOutputURL(for input: URL, massCorrection: Bool = false) -> URL {
-        input.deletingPathExtension().appendingPathExtension((massCorrection ? "mc." : "") + (self == .full ? "mzML" : "sp.mzML"))
+        // A file name beside the input; an Agilent .d input is a folder, so never inherit its directory form.
+        let name = input.deletingPathExtension().lastPathComponent + "." + (massCorrection ? "mc." : "") + (self == .full ? "mzML" : "sp.mzML")
+        return input.deletingLastPathComponent().appendingPathComponent(name, isDirectory: false)
     }
 
     public func outputURL(_ url: URL) -> URL {

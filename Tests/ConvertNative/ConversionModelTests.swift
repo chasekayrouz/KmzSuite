@@ -145,6 +145,23 @@ import KmzMacSupport
         XCTAssertTrue(try started()[1].contains("|--inspect|--sample|7|"))
     }
 
+    func testAgilentFoldersAreQueuedButOtherFoldersAndDotDFilesAreRejected() throws {
+        let bundle = folder.appendingPathComponent("Run 1.d", isDirectory: true)
+        let upper = folder.appendingPathComponent("Run2.D", isDirectory: true)
+        let plain = folder.appendingPathComponent("results", isDirectory: true)
+        for directory in [bundle, upper, plain] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        FileManager.default.createFile(atPath: input("notes.d").path, contents: Data())
+        let model = ConversionModel()
+        model.addInputs([bundle, input("one.wiff"), upper, plain, input("notes.d")])
+        XCTAssertEqual(model.inputs.map(\.lastPathComponent), ["Run 1.d", "one.wiff", "Run2.D"])
+        XCTAssertTrue(model.status.contains("2 rejected"))
+        XCTAssertEqual(model.output?.lastPathComponent, "Run 1.mzML")
+        XCTAssertEqual(model.output?.hasDirectoryPath, false)
+        XCTAssertEqual(model.destination(for: upper)?.lastPathComponent, "Run2.mzML")
+    }
+
     func testMultipleSelectionDeduplicationFilteringAndRemoval() {
         let model = ConversionModel()
         model.select(input("single.wiff"))

@@ -8,7 +8,9 @@ import time
 
 from kmzconvert_core import __version__
 from kmzconvert_core.binary import FormatError
+from kmzconvert_core.formats import AGILENT, detect
 from kmzconvert_core.native import NativeWiffReader as WiffReader
+from kmzconvert_core.agilent import AgilentReader
 from kmzconvert_core.samples import list_samples, sample_output_path
 from kmzconvert_core.writer import LIMITATIONS, write_mzml
 from kmzconvert_core.mass_correction import parse_references, estimate_mass_correction, default_output_name
@@ -17,14 +19,15 @@ from kmzcore.sparse_profile import output_path
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Experimental native X500 WIFF2-sidecar to mzML converter")
-    parser.add_argument("input", type=Path, help=".wiff2 entry point, or .wiff; matching .wiff and .wiff.scan must be present")
+    parser = argparse.ArgumentParser(description="Experimental native converter of SCIEX X500 WIFF and Agilent MassHunter .d acquisitions to mzML")
+    parser.add_argument("input", type=Path, help=".wiff2 or .wiff entry point (matching .wiff and .wiff.scan must be present), "
+                                                 "or an Agilent MassHunter .d folder")
     parser.add_argument("-o", "--output", type=Path, help="new output file (default: ./<input>.mzML or .sp.mzML; beta correction adds .mc; never overwritten)")
     parser.add_argument("--profile", choices=("full", "sparse"), default="full",
                         help="Full Profile (default) or Sparse Profile: smaller, lossy MS1 inspection mzML")
     parser.add_argument("--inspect", action="store_true", help="print decoded layout and metadata without conversion")
-    parser.add_argument("--list-samples", action="store_true", help="print WIFF sample identifiers as JSON without conversion")
-    parser.add_argument("--sample", type=int, metavar="ID", help="convert/inspect one metadata sample ID; required for multi-sample WIFF")
+    parser.add_argument("--list-samples", action="store_true", help="print WIFF sample identifiers as JSON without conversion (an Agilent .d is one sample)")
+    parser.add_argument("--sample", type=int, metavar="ID", help="convert/inspect one WIFF metadata sample ID; required for multi-sample WIFF")
     parser.add_argument("--mass-reference", action="append", default=[], metavar="MZ;RT_MINUTES",
                         help="enable beta global MS1 ppm correction; repeat expected_mz;RT_minutes for each standard")
     parser.add_argument("--version", action="version", version=__version__)
@@ -38,10 +41,24 @@ def main(argv=None):
     started = time.monotonic()
     reader = None
     try:
+        agilent = detect(args.input) == AGILENT
         if args.list_samples:
-            print(json.dumps({"samples": [{"id": s.id} for s in list_samples(args.input)]}))
+            ids = [1] if agilent else [s.id for s in list_samples(args.input)]
+            print(json.dumps({"samples": [{"id": i} for i in ids]}))
             return 0
-        reader = WiffReader(args.input, sample_id=args.sample) if args.sample is not None else WiffReader(args.input)
+        if agilent:
+            if args.sample is not None:
+                raise ValueError("An Agilent .d acquisition holds one run; omit --sample")
+            if not args.inspect and args.profile == "sparse":
+                raise ValueError("Sparse Profile is not yet qualified for Agilent data; use Full Profile")
+            if references:
+                raise ValueError("Beta mass correction is not yet qualified for Agilent data; omit --mass-reference")
+            reader = AgilentReader(args.input)
+            if args.inspect:
+                print(json.dumps(reader.inspect(), indent=2))
+                return 0
+        else:
+            reader = WiffReader(args.input, sample_id=args.sample) if args.sample is not None else WiffReader(args.input)
         if hasattr(reader, "dad_status"):
             prefix = "warning: " if reader.dad_status == "unreadable" else ""
             print(f"kmzconvert: {prefix}{reader.dad_message}", file=sys.stderr)
@@ -66,7 +83,7 @@ def main(argv=None):
         output = output_path(args.output or Path.cwd() / default_output_name(args.input, args.profile, corrected=bool(references)), args.profile)
         if args.sample is not None:
             output = sample_output_path(output, reader.sample_id)
-        print(LIMITATIONS, file=sys.stderr)
+        print(getattr(reader, "limitations", LIMITATIONS), file=sys.stderr)
         correction = None
         if references:
             print(WARNING, file=sys.stderr, flush=True)

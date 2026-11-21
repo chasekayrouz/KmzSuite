@@ -98,7 +98,7 @@ private final class ProcessLog {
     @Published private(set) var cancelling = false
     @Published private(set) var progress: ConversionProgress?
     @Published private(set) var results: [ConversionResult] = []
-    @Published private(set) var status = "Choose WIFF or WIFF2 files with matching sidecars."
+    @Published private(set) var status = "Choose SCIEX WIFF files or Agilent .d folders."
     @Published private(set) var log = ""
     @Published private(set) var succeeded = false
     @Published private(set) var sampleSelection: SampleSelectionRequest?
@@ -144,7 +144,7 @@ private final class ProcessLog {
 
     func select(_ url: URL) {
         guard !running else { return }
-        guard accepts(url) else { status = "Select a .wiff or .wiff2 file."; return }
+        guard accepts(url) else { status = "Select a .wiff or .wiff2 file, or an Agilent .d folder."; return }
         inputs = []
         outputDirectory = nil
         addInputs([url])
@@ -166,12 +166,16 @@ private final class ProcessLog {
         }
         if isBatch { inspect = false }
         resetResults()
-        status = rejected > 0 ? "Only .wiff and .wiff2 files can be added (\(rejected) rejected)." :
-            "\(inputs.count) file(s) ready. Matching sidecars must be beside each input."
+        status = rejected > 0 ? "Only .wiff and .wiff2 files and Agilent .d folders can be added (\(rejected) rejected)." :
+            "\(inputs.count) input(s) ready. WIFF sidecars must be beside each WIFF file."
     }
 
     private func accepts(_ url: URL) -> Bool {
-        url.isFileURL && ["wiff", "wiff2"].contains(url.pathExtension.lowercased())
+        guard url.isFileURL else { return false }
+        let isDirectory = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+        let ext = url.pathExtension.lowercased()
+        // An Agilent MassHunter acquisition is a .d folder; the converter checks its contents.
+        return isDirectory ? ext == "d" : ["wiff", "wiff2"].contains(ext)
     }
 
     func removeInputs(_ urls: Set<URL>) {
@@ -182,7 +186,7 @@ private final class ProcessLog {
         } else { output = nil; outputDirectory = nil }
         outputIsCustom = false
         resetResults()
-        status = inputs.isEmpty ? "Choose WIFF or WIFF2 files with matching sidecars." : "\(inputs.count) file(s) ready."
+        status = inputs.isEmpty ? "Choose SCIEX WIFF files or Agilent .d folders." : "\(inputs.count) input(s) ready."
     }
 
     private func resetResults() {
@@ -192,10 +196,10 @@ private final class ProcessLog {
 
     func chooseInput() {
         let panel = NSOpenPanel()
-        panel.canChooseDirectories = false
+        panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
         panel.allowedContentTypes = ["wiff", "wiff2"].compactMap { UTType(filenameExtension: $0) }
-        panel.message = "Add .wiff or .wiff2 entry points to the queue"
+        panel.message = "Add .wiff or .wiff2 entry points, or Agilent .d folders, to the queue"
         if panel.runModal() == .OK { addInputs(panel.urls) }
     }
 
@@ -353,7 +357,7 @@ private final class ProcessLog {
                 results[index].outcome = .pending
             } else {
                 results[index].outcome = cancelling || code == 130 ? .cancelled : .failed
-                results[index].message = "Could not read WIFF samples. See the log."
+                results[index].message = "Could not read the input's samples. See the log."
                 logData.append(data)
                 appendLog("\n\(results[index].input.lastPathComponent): \(results[index].message)\n")
             }

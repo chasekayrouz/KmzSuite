@@ -85,13 +85,20 @@ def metadata(reader, profile="full", mass_correction=None, *, sparse_format=FORM
     ET.SubElement(cvs, "cv", id="UO", fullName="Unit Ontology", URI=UO_URI)
     description = ET.SubElement(container, "fileDescription")
     content = ET.SubElement(description, "fileContent")
-    cv(content, "MS:1000579", "MS1 spectrum")
-    cv(content, "MS:1000580", "MSn spectrum")
+    agilent = getattr(reader, "format_name", None) == "Agilent MassHunter"
+    levels = {s.ms_level for s in reader.scans} if agilent else {1, 2}
+    if 1 in levels:
+        cv(content, "MS:1000579", "MS1 spectrum")
+    if levels - {1}:
+        cv(content, "MS:1000580", "MSn spectrum")
     cv(content, "MS:1000128", "profile spectrum")
     cv(content, "MS:1000235", "total ion current chromatogram")
     dad = getattr(reader, "dad", None)
     if dad is not None:
         cv(content, "MS:1000806", "absorption spectrum")
+    if agilent:
+        _agilent_metadata(container, description, reader)
+        return list(container)
     if hasattr(reader, 'sample_id'):
         user(content, "KmzConvert WIFF sample identifier", reader.sample_id)
     paths = [("WIFF", reader.wiff_path), ("WIFFSCAN", reader.scan_path)]
@@ -173,6 +180,38 @@ def metadata(reader, profile="full", mass_correction=None, *, sparse_format=FORM
     return list(container)
 
 
+def _agilent_metadata(container, description, reader):
+    """File, software, instrument and processing description of an Agilent MassHunter conversion (Full Profile)."""
+    sources = ET.SubElement(description, "sourceFileList", count=str(len(reader.files)))
+    for name, path in reader.files.items():
+        ident = reader.source_ref if name == "MSScan.bin" else name.replace(".", "_")
+        source = ET.SubElement(sources, "sourceFile", id=ident, name=path.name, location=path.parent.as_uri())
+        cv(source, "MS:1001508", "Agilent MassHunter nativeID format")
+        cv(source, "MS:1001509", "Agilent MassHunter format")
+        with path.open("rb") as f:
+            cv(source, "MS:1000569", "SHA-1", hashlib.file_digest(f, "sha1").hexdigest())
+    software = ET.SubElement(container, "softwareList", count="2")
+    acquisition = ET.SubElement(software, "software", id="acquisition", version=reader.acquisition_software or "unknown")
+    cv(acquisition, "MS:1000678", "MassHunter Data Acquisition")
+    converter = ET.SubElement(software, "software", id="kmzconvert_core", version=__version__)
+    cv(converter, "MS:1000799", "custom unreleased software tool", "KmzConvert")
+    instruments = ET.SubElement(container, "instrumentConfigurationList", count="1")
+    instrument = ET.SubElement(instruments, "instrumentConfiguration", id="IC1")
+    cv(instrument, "MS:1000490", "Agilent instrument model")
+    if reader.instrument.get("Serial Number"):
+        cv(instrument, "MS:1000529", "instrument serial number", reader.instrument["Serial Number"])
+    for key, val in reader.instrument.items():
+        if key != "Serial Number" and val:
+            user(instrument, "Agilent " + key, val)
+    ET.SubElement(instrument, "softwareRef", ref="acquisition")
+    processing = ET.SubElement(container, "dataProcessingList", count="1")
+    dp = ET.SubElement(processing, "dataProcessing", id="conversion")
+    method = ET.SubElement(dp, "processingMethod", order="0", softwareRef="kmzconvert_core")
+    cv(method, "MS:1000544", "Conversion to mzML")
+    user(method, "KmzConvert decoding limitations", reader.limitations)
+    user(method, "KmzConvert mass calibration source", reader.calibration_source)
+
+
 def dad_element(dad, index, ident, rt):
     """A DAD spectrum without its arrays."""
     element = ET.Element("spectrum", index=str(index), id=ident, defaultArrayLength=str(len(dad.wavelength)))
@@ -249,7 +288,10 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
         e.set("dataProcessingRef", ref)
     cv(e, "MS:1000511", "ms level", experiment.ms_level)
     cv(e, "MS:1000579" if experiment.ms_level == 1 else "MS:1000580", "MS1 spectrum" if experiment.ms_level == 1 else "MSn spectrum")
-    cv(e, "MS:1000130", "positive scan")
+    if experiment.polarity == "negative":
+        cv(e, "MS:1000129", "negative scan")
+    else:
+        cv(e, "MS:1000130", "positive scan")
     cv(e, "MS:1000128", "profile spectrum")
     cv(e, "MS:1000285", "total ion current", scan.tic)
     if check is not None:
@@ -258,7 +300,7 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
     cv(scans, "MS:1000795", "no combination")
     acq = ET.SubElement(scans, "scan")
     cv(acq, "MS:1000016", "scan start time", rt, MINUTES)
-    cv(acq, "MS:1000616", "preset scan configuration", scan.experiment)
+    cv(acq, "MS:1000616", "preset scan configuration", getattr(scan, "preset", scan.experiment))
     windows = ET.SubElement(acq, "scanWindowList", count="1")
     window = ET.SubElement(windows, "scanWindow")
     cv(window, "MS:1000501", "scan window lower limit", experiment.lower_mz, MZ)
@@ -271,6 +313,9 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
         ions = ET.SubElement(precursor, "selectedIonList", count="1")
         ion = ET.SubElement(ions, "selectedIon")
         cv(ion, "MS:1000744", "selected ion m/z", scan.precursor_mz, MZ)
+        charge = getattr(scan, "precursor_charge", None)
+        if charge is not None:
+            cv(ion, "MS:1000041", "charge state", charge)
         # DDE also stores a signal value, but its intensity convention is not
         # confirmed. Preserve it in forensic reports rather than label it here.
         activation = ET.SubElement(precursor, "activation")
@@ -286,7 +331,8 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
 def spectrum(reader, scan, index, profile="full", mass_correction=None, *, sparse_format=FORMAT, selection=None):
     mz, intensity, ref, check = spectrum_arrays(reader, scan, profile, mass_correction,
                                                 sparse_format=sparse_format, selection=selection)
-    e = spectrum_element(scan, reader.experiments[scan.experiment-1], index, len(mz), scan.rt_seconds/60,
+    rt = scan.rt_minutes if hasattr(scan, "rt_minutes") else scan.rt_seconds/60
+    e = spectrum_element(scan, reader.experiments[scan.experiment-1], index, len(mz), rt,
                          ref, None if check is None else canonical(check))
     arrays = ET.SubElement(e, "binaryDataArrayList", count="2")
     binary_array(arrays, mz, "mz")
@@ -454,6 +500,12 @@ def write_mzml(reader, destination, progress=None, *, profile="full", mass_corre
     if destination.is_symlink():
         raise FileExistsError(f"Refusing to write through output symlink {destination}")
     destination = destination.resolve()
+    if getattr(reader, "format_name", None) == "Agilent MassHunter":
+        # Full Profile only until other representations are qualified for Agilent data.
+        if profile != "full" or mass_correction is not None:
+            raise ValueError("Agilent data supports Full Profile without mass correction only")
+        if destination.is_relative_to(reader.entry):
+            raise ValueError(f"Refusing to write inside the source acquisition {reader.entry.name}")
     if destination.exists():
         raise FileExistsError(f"Refusing to overwrite {destination}")
     if destination.suffix.lower() != ".mzml":
@@ -494,7 +546,8 @@ def write_mzml(reader, destination, progress=None, *, profile="full", mass_corre
                     elements = elements if described is None else described.result()
             for element in elements:
                 emit(ET.tostring(element, encoding="utf-8") + b"\n")
-            emit(b'<run id="run1" defaultInstrumentConfigurationRef="IC1" defaultSourceFileRef="WIFF">\n')
+            source_ref = getattr(reader, "source_ref", "WIFF")
+            emit(f'<run id="run1" defaultInstrumentConfigurationRef="IC1" defaultSourceFileRef="{source_ref}">\n'.encode())
             emit(f'<spectrumList count="{total_spectra}" defaultDataProcessingRef="conversion">\n'.encode())
             # Production readers serialize through templates of the same elements;
             # other readers (and patched writer functions) keep stdlib serialization.
