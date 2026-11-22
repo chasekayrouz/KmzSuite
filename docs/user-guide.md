@@ -74,7 +74,9 @@ Good to know:
 - **Agilent `.d` folders** convert in Full Profile only, so far. Sparse Profile and
   mass correction report an error for them. Masses use the instrument's own
   calibration: the per-scan calibration, which includes reference-mass correction,
-  when the folder has one, otherwise its default calibration.
+  when the folder has one, otherwise its default calibration. A folder saved
+  without profile data (centroids only) is converted to the centroids the
+  instrument stored, marked as centroid spectra in the mzML.
 
 **From the Terminal.** The installed `kmzconvert` command does the same work:
 
@@ -248,13 +250,18 @@ rm -rf .venv
   Negative polarity, other instruments, WIFF2-only data, multiple periods and
   multi-sample files whose methods differ are refused. Precursor charge, isolation
   width and activation type are not decoded.
-- **Agilent conversion** supports MassHunter TOF and Q-TOF acquisitions saved with
-  profile data: MS1 and targeted MS/MS. It has been checked on a 6545 (MassHunter
-  B.08, negative targeted MS/MS) and a 6546 (MassHunter 10.1, positive MS1).
-  Data-dependent MS/MS and other models have not been tested. Centroid-only data,
-  triple quadrupoles, ion mobility (6560), All Ions MS/MS, older MassHunter
-  layouts and UV (DAD) data are refused or not exported. Isolation width and activation type
-  are not decoded, and Sparse Profile and mass correction are not available yet.
+- **Agilent conversion** supports MassHunter TOF and Q-TOF acquisitions, MS1 and
+  targeted MS/MS, saved with profile data or as centroids only. Profile data has
+  been checked against vendor-library exports on a 6545 (MassHunter B.08, negative
+  targeted MS/MS) and a 6546 (MassHunter 10.1, positive MS1), and centroid-only
+  data on a 6220 and a 6546 (MassHunter 10.1). Centroid-only 6540 data (MassHunter
+  B.06.01) has been checked against the totals stored for each scan, not against a
+  vendor export. Data-dependent MS/MS and other models have not been tested.
+  Centroid-only output has no scan range, because the centroid records hold only
+  the observed m/z range of each scan.
+  Triple quadrupoles, ion mobility (6560), All Ions MS/MS, older MassHunter layouts
+  and UV (DAD) data are refused or not exported. Isolation width and activation
+  type are not decoded, and Sparse Profile and mass correction are not available yet.
 - **Sparse Profile** omits weak signal (peaks that never exceed about 20 detector
   events) and trims faint peak tails. Use Full Profile for quantitative work.
 - **Mass correction** is a beta: one global offset per run, with no guarantee of

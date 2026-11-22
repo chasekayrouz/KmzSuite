@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Qualify Agilent MassHunter .d conversion against local reference mzML files.
+"""Qualify Agilent MassHunter .d conversion against local reference mzML/mzXML files.
 
-Each ``--case DIR.d=REFERENCE.mzML`` is converted with the production CLI into an
-ignored output directory and checked for: mzML 1.1 schema, PSI-MS names, index
-and checksum; exact round trip of the written arrays; spectrum identity, order,
+Each ``--case DIR.d=REFERENCE.mzML`` (or ``.mzXML``) is converted with the production
+CLI into an ignored output directory and checked for: mzML 1.1 schema, PSI-MS names,
+index and checksum; exact round trip of the written arrays; spectrum identity, order,
 retention time, MS level, polarity, precursor m/z, charge and collision energy
-against the reference; the flight-time calibration, by decoding the bundle's
-centroid block (MSPeak.bin) with the reader's calibration and comparing it with
-the reference peaks; and that every reference peak lies on written profile signal.
-``--refuse DIR.d`` bundles must be refused cleanly. Originals are never modified;
-only aggregate results with safe IDs are reported.
+against the reference. Profile conversions also check the flight-time calibration,
+by decoding the bundle's centroid block (MSPeak.bin) with the reader's calibration
+and comparing it with the reference peaks, and that every reference peak lies on
+written profile signal. Centroid-only conversions compare the written centroids
+with the reference peaks directly. ``--refuse DIR.d`` bundles must be refused
+cleanly. Originals are never modified; only aggregate results with safe IDs are
+reported.
 """
 import argparse
 import contextlib
@@ -21,7 +23,7 @@ import sys
 import time
 
 import numpy as np
-from pyteomics import mzml
+from pyteomics import mzml, mzxml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -64,6 +66,39 @@ def centroids(reader, index):
     return reader.calibration(reader.scans[index]).mz(t), y.astype(np.float64)
 
 
+def rm_bits(array):
+    return np.asarray(array).dtype.itemsize * 8
+
+
+def at_precision(ours, reference):
+    """Our array rounded to the reference array's floating-point width, as float64."""
+    width = np.dtype(f'<f{np.asarray(reference).dtype.itemsize}')
+    return np.asarray(ours).astype(width).astype(np.float64)
+
+
+def reference_spectra(path):
+    """Reference spectra as the mzML-style dictionaries used below (mzXML is translated)."""
+    if Path(path).suffix.lower() != '.mzxml':
+        return [s for s in mzml.MzML(str(path)) if s['id'].startswith('scanId=')]
+    out = []
+    for s in mzxml.MzXML(str(path)):
+        spectrum = {'id': f"scanId={s['num']}", 'ms level': s['msLevel'],
+                    'scanList': {'scan': [{'scan start time': s['retentionTime']}]},
+                    'm/z array': s['m/z array'], 'intensity array': s['intensity array']}
+        polarity = {'+': 'positive scan', '-': 'negative scan'}.get(s.get('polarity'))
+        if polarity is not None:  # an unknown polarity leaves neither, so it cannot match
+            spectrum[polarity] = ''
+        if s['msLevel'] > 1:
+            ion = {'selected ion m/z': s['precursorMz'][0]['precursorMz']}
+            if 'precursorCharge' in s['precursorMz'][0]:
+                ion['charge state'] = s['precursorMz'][0]['precursorCharge']
+            activation = {'collision energy': s['collisionEnergy']} if 'collisionEnergy' in s else {}
+            spectrum['precursorList'] = {'precursor': [{'selectedIonList': {'selectedIon': [ion]},
+                                                        'activation': activation}]}
+        out.append(spectrum)
+    return out
+
+
 def qualify(ident, bundle, reference, output, cv):
     before = tree_digest(bundle)
     started = time.monotonic()
@@ -74,7 +109,9 @@ def qualify(ident, bundle, reference, output, cv):
     validation = check(destination, ROOT / '.cache/standards/mzML1.1.0_idx.xsd', cv)
     reader = AgilentReader(bundle)
     written = list(mzml.MzML(str(destination)))
-    refs = [s for s in mzml.MzML(str(reference)) if s['id'].startswith('scanId=')]
+    refs = reference_spectra(reference)
+    # mzML references carry full-precision minutes; mzXML prints seconds to the millisecond.
+    rt_tolerance = 0.0005 / 60 if Path(reference).suffix.lower() == '.mzxml' else 1e-9
     assert [s['id'] for s in written] == [s.native_id for s in reader.scans], 'written IDs'
     # A reference may cover a retention-time window: its IDs must be an ordered subset of ours.
     position = {s['id']: i for i, s in enumerate(written)}
@@ -85,12 +122,12 @@ def qualify(ident, bundle, reference, output, cv):
         mz, y = reader.arrays(scan)
         roundtrip += np.array_equal(mz, ours['m/z array']) and np.array_equal(y, ours['intensity array'])
     rt = level = polarity = precursor = charge = energy = 0
-    ppm, intensity_equal, on_signal, peaks, apex_ppm = [], 0, 0, 0, []
+    ppm, intensity_equal, on_signal, peaks, apex_ppm, precisions, empty_matched, empty_with_tic = [], 0, 0, 0, [], set(), 0, 0
     for i, ref in zip(matched, refs, strict=True):
         scan, ours = reader.scans[i], written[i]
         mz, y = reader.arrays(scan)
         ours_scan, ref_scan = ours['scanList']['scan'][0], ref['scanList']['scan'][0]
-        rt += abs(ours_scan['scan start time'] - ref_scan['scan start time']) <= 1e-9
+        rt += abs(ours_scan['scan start time'] - ref_scan['scan start time']) <= rt_tolerance
         level += ours['ms level'] == ref['ms level']
         polarity += ('negative scan' in ours) == ('negative scan' in ref) and ('positive scan' in ours) == ('positive scan' in ref)
         if ref['ms level'] > 1:
@@ -104,13 +141,30 @@ def qualify(ident, bundle, reference, output, cv):
             precursor += 'precursorList' not in ours
             charge += 1
             energy += 1
+        if reader.centroided:
+            # The written spectra are the stored centroids: compare them with the reference peaks.
+            # Compare at each reference array's stored precision (any byte order): some vendor
+            # exports write 32-bit m/z.
+            cm, cy = (at_precision(ours[k], ref[k]) for k in ('m/z array', 'intensity array'))
+            rm, ry = (np.asarray(ref[k], dtype=np.float64) for k in ('m/z array', 'intensity array'))
+            precisions.add(f"{rm_bits(ref['m/z array'])}-bit m/z, {rm_bits(ref['intensity array'])}-bit intensity")
+            if len(cm) != len(rm):
+                ppm.append(float('inf'))
+            elif len(rm) == 0:
+                empty_matched += 1  # no masses to compare
+                empty_with_tic += ours['total ion current'] > 0
+            else:
+                ppm.append(float(np.max(np.abs(cm - rm) / rm * 1e6)))
+                intensity_equal += np.array_equal(cy, ry)
+            continue
         peak = centroids(reader, i)
         if peak is not None:
-            cm, cy = peak
-            rm, ry = ref['m/z array'], ref['intensity array']
+            cm, cy = at_precision(peak[0], ref['m/z array']), at_precision(peak[1], ref['intensity array'])
+            rm, ry = (np.asarray(ref[k], dtype=np.float64) for k in ('m/z array', 'intensity array'))
+            precisions.add(f"{rm_bits(ref['m/z array'])}-bit m/z, {rm_bits(ref['intensity array'])}-bit intensity")
             if len(cm) == len(rm) and len(rm):
                 ppm.append(float(np.max(np.abs(cm - rm) / rm * 1e6)))
-                intensity_equal += np.array_equal(cy.astype(np.float32), ry.astype(np.float32))
+                intensity_equal += np.array_equal(cy, ry)
         # Each reference peak must lie on stored signal: a nonzero point within two native bins.
         t, stored = reader.decoded(scan)
         axis = reader.calibration(scan).mz(t)
@@ -132,20 +186,24 @@ def qualify(ident, bundle, reference, output, cv):
             apex_ppm.append(float(((axis[j - 1:j + 2] * w).sum() / w.sum() - m) / m * 1e6))
     n, m = len(reader.scans), len(refs)
     after = tree_digest(bundle)
-    encoding = reader.profile_encoding()
+    encoding = reader.profile_encoding() or ('centroid-only' if reader.centroided else None)
     reader.close()
     return {
         'case': ident, 'instrument': reader.instrument.get('Model'), 'software': reader.acquisition_software,
+        'centroid_only': reader.centroided,
         'profile_encoding': encoding, 'calibration': reader.calibration_source,
         'spectra': n, 'ms_levels': {int(k): int(v) for k, v in zip(*np.unique([s.ms_level for s in reader.scans], return_counts=True))},
         'seconds': round(seconds, 2), 'output_bytes': destination.stat().st_size,
         'xsd_valid': validation['xsd_valid'], 'psi_ms_names_valid': validation['psi_ms_names_valid'],
         'index': validation['index'],
         'arrays_roundtrip_exact': roundtrip == n, 'reference_spectra_matched_in_order': f'{m}/{n}', 'matched_spectra': m,
-        'rt_within_1e-9_min': rt == m, 'ms_level_exact': level == m, 'polarity_exact': polarity == m,
+        'rt_within_reference_precision': rt == m, 'rt_tolerance_min': rt_tolerance, 'ms_level_exact': level == m, 'polarity_exact': polarity == m,
         'precursor_mz_within_1e-12': precursor == m, 'charge_exact': charge == m, 'collision_energy_exact': energy == m,
         'centroid_calibration_scans': len(ppm),
         'centroid_calibration_max_ppm': max(ppm) if ppm else None,
+        'reference_precision': sorted(precisions),
+        'centroid_empty_spectra_matched': empty_matched,
+        'centroid_empty_spectra_with_stored_tic': int(empty_with_tic),
         'centroid_intensity_exact_scans': intensity_equal,
         'reference_peaks_on_stored_signal': on_signal == peaks,
         'apex_vs_reference_peaks': len(apex_ppm),
@@ -176,11 +234,13 @@ def main():
         results.append(qualify(f'agilent-{i:02}', Path(bundle), Path(reference), args.output, args.cv))
     refusals = [refuse(f'refuse-{i:02}', path) for i, path in enumerate(args.refuse, 1)]
     def passed(r):
-        exact = ('xsd_valid', 'psi_ms_names_valid', 'arrays_roundtrip_exact', 'rt_within_1e-9_min', 'ms_level_exact',
+        exact = ('xsd_valid', 'psi_ms_names_valid', 'arrays_roundtrip_exact', 'rt_within_reference_precision', 'ms_level_exact',
                  'polarity_exact', 'precursor_mz_within_1e-12', 'charge_exact', 'collision_energy_exact',
                  'reference_peaks_on_stored_signal', 'source_unchanged')
         centroids_ok = r['centroid_calibration_scans'] == 0 or (
             r['centroid_calibration_max_ppm'] <= 1e-3 and r['centroid_intensity_exact_scans'] == r['centroid_calibration_scans'])
+        # Centroid-only output must have been compared on at least one non-empty spectrum.
+        centroids_ok = centroids_ok and (not r['centroid_only'] or r['centroid_calibration_scans'] > 0)
         # Without stored centroids, the apex statistic is the calibration check (it is biased
         # by vendor peak picking, so stored centroids decide when present).
         apex_ok = r['centroid_calibration_scans'] > 0 or (

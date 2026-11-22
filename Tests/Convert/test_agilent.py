@@ -45,6 +45,22 @@ RECORD = np.dtype([("ScanID", "<i4"), ("ScanMethodID", "<i4"), ("TimeSegmentID",
                   + [(f"b{i}_{n}", t) for i in range(2) for n, t in
                      (("format", "<i4"), ("offset", "<i8"), ("bytes", "<i4"), ("points", "<i4"),
                       ("uncompressed", "<i4"), ("minx", "<f8"), ("maxx", "<f8"))])
+# MassHunter B.06 schemas declare ChromScaleFactor as xs:double; its records hold a 4-byte float.
+XSD_CHROM_SCALE = XSD.replace('<xs:element name="MassCalOffset"',
+                              '<xs:element name="ChromScaleFactor" type="xs:double" minOccurs="0"/><xs:element name="MassCalOffset"')
+
+
+def record_dtype(chrom_scale=None):
+    if chrom_scale is None:
+        return RECORD
+    fields = []
+    for name, kind in RECORD.descr:
+        if name == "MassCalOffset":
+            fields.append(("ChromScaleFactor", chrom_scale))
+        fields.append((name, kind))
+    return np.dtype(fields)
+
+
 TRADITIONAL = (3.5e-4, 1005.0)
 POLYNOMIAL = (30000.0, 120000.0, 2e-3, -1e-7)
 FLAGS = 3  # powers 0 and 1
@@ -79,7 +95,9 @@ def rle_block(x0, dx, y):
 
 
 def make_bundle(root, name="Run.d", *, encoding="lzf", device="QTOF", per_scan_cal=False, tamper=None, extra=(),
-                cal_offsets=None, levels=(1, 2, 1)):
+                cal_offsets=None, levels=(1, 2, 1), centroid=False, chrom_scale=None):
+    """A synthetic bundle; ``centroid`` stores only MSPeak.bin centroids (empty MSProfile.bin) and
+    ``chrom_scale`` adds a ChromScaleFactor record field of that type, declared xs:double."""
     bundle = root / name
     acq = bundle / "AcqData"
     acq.mkdir(parents=True)
@@ -90,6 +108,7 @@ def make_bundle(root, name="Run.d", *, encoding="lzf", device="QTOF", per_scan_c
         (13, 0.20, 1, 1, 1, 0.0, 0.0, 0, {60: 100, 61: 200}),
     ]
     profile = bytearray(struct.pack("<I", 258) + bytes(64))
+    peak = bytearray(struct.pack("<I", 259) + bytes(64))
     records, cal = [], default_cal()
     scans = [s for s, keep in zip(scans, levels) if keep] if levels != (1, 2, 1) else scans
     for index, (sid, rt, level, kind, polarity, ce, precursor, charge, peaks) in enumerate(scans):
@@ -102,7 +121,7 @@ def make_bundle(root, name="Run.d", *, encoding="lzf", device="QTOF", per_scan_c
             block = rle_block(x0, dx, y)
         top = int(np.argmax(y))
         bp_mz = float(cal.mz(np.array([x0 + top * dx]))[0])
-        r = np.zeros((), RECORD)
+        r = np.zeros((), record_dtype(chrom_scale))
         t_axis = x0 + dx * np.arange(points)
         values = dict(ScanID=sid, ScanMethodID=1, TimeSegmentID=1, ScanTime=rt, MSLevel=level, ScanType=kind,
                       TIC=float(y.sum()), BasePeakMZ=bp_mz, BasePeakValue=float(y.max()), CalibrationID=1,
@@ -112,6 +131,15 @@ def make_bundle(root, name="Run.d", *, encoding="lzf", device="QTOF", per_scan_c
                       DDScanID=sid, b0_format=1, b0_offset=len(profile), b0_bytes=len(block), b0_points=points,
                       b0_uncompressed=16 + 4 * points, b0_minx=float(cal.mz(t_axis[:1])[0]),
                       b0_maxx=float(cal.mz(t_axis[-1:])[0]), b1_format=2)
+        if chrom_scale is not None:
+            values["ChromScaleFactor"] = 1.0
+        if centroid:
+            at = np.array(sorted(peaks))
+            centroids = (x0 + dx * at).astype("<f8").tobytes() + np.array([peaks[k] for k in at], "<f4").tobytes()
+            mz = cal.mz(x0 + dx * at)
+            values.update(b0_format=2, b0_offset=len(peak), b0_bytes=len(centroids), b0_points=len(at),
+                          b0_uncompressed=0, b0_minx=float(mz[0]), b0_maxx=float(mz[-1]), b1_format=0)
+            peak += centroids
         for k, v in values.items():
             r[k] = v
         if tamper:
@@ -121,8 +149,10 @@ def make_bundle(root, name="Run.d", *, encoding="lzf", device="QTOF", per_scan_c
     header = bytearray(struct.pack("<I", 257) + bytes(0x60 - 4))
     struct.pack_into("<I", header, 0x58, len(header))
     (acq / "MSScan.bin").write_bytes(bytes(header) + b"".join(records))
-    (acq / "MSScan.xsd").write_text(XSD)
-    (acq / "MSProfile.bin").write_bytes(bytes(profile))
+    (acq / "MSScan.xsd").write_text(XSD if chrom_scale is None else XSD_CHROM_SCALE)
+    (acq / "MSProfile.bin").write_bytes(b"" if centroid else bytes(profile))
+    if centroid:
+        (acq / "MSPeak.bin").write_bytes(bytes(peak))
     (acq / "MSTS.xml").write_text(f"<TimeSegments><TimeSegment TimeSegmentID=\"1\"><NumOfScans>{len(scans)}</NumOfScans></TimeSegment></TimeSegments>")
     (acq / "Devices.xml").write_text(f"<Devices><Device DeviceID=\"1\"><Name>{device}</Name><ModelNumber>G0000X</ModelNumber>"
                                      "<SerialNumber>SYNTH</SerialNumber></Device></Devices>")
@@ -238,11 +268,143 @@ def test_unsupported_bundles_are_refused(tmp_path, kwargs, message):
         AgilentReader(make_bundle(tmp_path, **kwargs))
 
 
-def test_missing_profile_file_is_refused(tmp_path):
+def test_bundle_without_profile_or_centroid_data_is_refused(tmp_path):
     bundle = make_bundle(tmp_path)
     (bundle / "AcqData/MSProfile.bin").unlink()
-    with pytest.raises(FormatError, match="centroid-only"):
+    with pytest.raises(FormatError, match="neither profile"):
         AgilentReader(bundle)
+    bundle = make_bundle(tmp_path / "centroid", centroid=True)
+    (bundle / "AcqData/MSPeak.bin").unlink()
+    with pytest.raises(FormatError, match="neither profile"):
+        AgilentReader(bundle)
+
+
+@pytest.mark.parametrize("centroid", [False, True])
+@pytest.mark.parametrize("chrom_scale", ["<f4", "<f8"])
+def test_chrom_scale_factor_may_be_stored_as_float_despite_the_schema(tmp_path, centroid, chrom_scale):
+    reader = AgilentReader(make_bundle(tmp_path, centroid=centroid, chrom_scale=chrom_scale))
+    assert reader.records.dtype["ChromScaleFactor"] == np.dtype(chrom_scale)
+    assert (reader.records["ChromScaleFactor"] == 1).all()
+    assert [s.precursor_mz for s in reader.scans] == [None, 412.25, None]
+    for scan in reader.scans:
+        reader.arrays(scan)
+    reader.close()
+
+
+def test_narrowed_chrom_scale_factor_must_read_as_one(tmp_path):
+    # Another four-byte disagreement with the schema must not pass as the B.06 float field.
+    def scaled(sid, record):
+        record["ChromScaleFactor"] = 0.5
+    with pytest.raises(FormatError, match="record size"):
+        AgilentReader(make_bundle(tmp_path, chrom_scale="<f4", tamper=scaled))
+    AgilentReader(make_bundle(tmp_path / "double", chrom_scale="<f8", tamper=scaled)).close()
+
+
+def test_centroid_only_bundle_yields_the_stored_centroids(tmp_path):
+    reader = AgilentReader(make_bundle(tmp_path, centroid=True))
+    assert reader.centroided and reader.limitations == agilent.CENTROID_LIMITATIONS
+    assert "MSPeak.bin" in reader.files and "MSProfile.bin" not in reader.files
+    mz, y = reader.arrays(reader.scans[0])
+    assert np.array_equal(y, [900, 1500, 700, 40000])
+    assert np.array_equal(mz, default_cal().mz(30000.0 + 0.5 * np.array([50, 51, 52, 200])))
+    assert all(reader.experiments[s.experiment - 1].lower_mz is None for s in reader.scans)
+    inspected = reader.inspect()
+    assert inspected["spectra_representation"] == "centroid" and inspected["profile_encoding"] is None
+    reader.close()
+
+
+def test_run_without_kept_centroids_converts_to_empty_spectra(tmp_path, capsys):
+    def unkept(sid, record):
+        record["b0_points"], record["b0_bytes"], record["b0_offset"] = 0, 0, 0
+    bundle = make_bundle(tmp_path, centroid=True, tamper=unkept)
+    path = bundle / "AcqData/MSPeak.bin"
+    path.write_bytes(path.read_bytes()[:68])  # header only
+    output = tmp_path / "empty.mzML"
+    assert main([str(bundle), "-o", str(output)]) == 0
+    spectra = list(mzml.MzML(str(output)))
+    assert [len(s["m/z array"]) for s in spectra] == [0, 0, 0]
+    assert [s["total ion current"] for s in spectra] == [43100, 330, 300]
+
+
+@pytest.mark.parametrize("tamper, message", [
+    (lambda r: r.__setitem__("b0_offset", 68), "out of bounds"),
+    (lambda r: r.__setitem__("TIC", float("nan")), "Invalid stored TIC"),
+    (lambda r: r.__setitem__("TIC", -1.0), "Invalid stored TIC"),
+    (lambda r: r.__setitem__("BasePeakValue", 1e9), "Invalid stored TIC"),
+])
+def test_empty_centroid_block_must_be_the_empty_sentinel(tmp_path, tamper, message):
+    def damage(sid, record):
+        if sid == 13:
+            record["b0_points"], record["b0_bytes"], record["b0_offset"] = 0, 0, 0
+            tamper(record)
+    with pytest.raises(FormatError, match=message):
+        AgilentReader(make_bundle(tmp_path, centroid=True, tamper=damage))
+
+
+def test_empty_centroid_block_with_stored_tic_is_an_empty_spectrum(tmp_path):
+    def unkept(sid, record):
+        if sid == 13:
+            record["b0_points"], record["b0_bytes"], record["b0_offset"] = 0, 0, 0
+    bundle = make_bundle(tmp_path, centroid=True, tamper=unkept)
+    path = bundle / "AcqData/MSPeak.bin"
+    with pytest.raises(FormatError, match="outside the scans' centroid blocks"):
+        AgilentReader(bundle)  # scan 13's centroids are still in the file
+    path.write_bytes(path.read_bytes()[:-24])  # its two centroids, 12 bytes each
+    reader = AgilentReader(bundle)
+    scan = reader.scans[2]
+    mz, y = reader.arrays(scan)
+    assert len(mz) == len(y) == 0 and scan.tic == 300
+    reader.close()
+
+
+def test_overlapping_centroid_blocks_are_refused(tmp_path):
+    def overlap(sid, record):
+        if sid == 13:
+            record["b0_offset"] -= 12
+    with pytest.raises(FormatError, match="overlap or leave gaps"):
+        AgilentReader(make_bundle(tmp_path, centroid=True, tamper=overlap))
+
+
+def test_missing_profile_file_is_named_when_centroids_do_not_reproduce_summaries(tmp_path):
+    def profile_scan(sid, record):
+        record["b1_format"], record["b1_bytes"] = 1, 100  # points at profile data the folder lacks
+        if sid == 13:
+            record["TIC"] = 999.0
+    reader = AgilentReader(make_bundle(tmp_path, centroid=True, tamper=profile_scan))
+    reader.arrays(reader.scans[0])
+    with pytest.raises(FormatError, match="MSProfile.bin is absent or empty although the scans reference profile"):
+        reader.arrays(reader.scans[2])
+    reader.close()
+
+
+@pytest.mark.parametrize("tamper, message", [
+    (lambda r: r.__setitem__("TIC", 1.0), "TIC"),
+    (lambda r: r.__setitem__("BasePeakValue", 1.0), "base peak intensity"),
+    (lambda r: r.__setitem__("BasePeakMZ", r["BasePeakMZ"] * (1 + 1e-7)), "base-peak m/z"),
+    (lambda r: r.__setitem__("b0_bytes", r["b0_bytes"] + 4), "centroid block size"),
+    (lambda r: r.__setitem__("b0_offset", 10 ** 6), "out of bounds"),
+    (lambda r: r.__setitem__("b0_format", 1), "no centroid spectrum"),
+])
+def test_centroid_guards(tmp_path, tamper, message):
+    def damage(sid, record):
+        if sid == 13:
+            tamper(record)
+    with pytest.raises(FormatError, match=message):
+        reader = AgilentReader(make_bundle(tmp_path, centroid=True, tamper=damage))
+        reader.arrays(reader.scans[2])
+
+
+def test_centroid_base_peak_tolerance(tmp_path):
+    def shift(sid, record):
+        if sid == 13:
+            record["BasePeakMZ"] *= 1 + 3e-8  # 0.03 ppm: within the centroid tolerance only
+    reader = AgilentReader(make_bundle(tmp_path, centroid=True, tamper=shift))
+    reader.arrays(reader.scans[2])
+    reader.close()
+    reader = AgilentReader(make_bundle(tmp_path / "profile", tamper=shift))
+    with pytest.raises(FormatError, match="base-peak m/z"):
+        reader.arrays(reader.scans[2])
+    reader.close()
 
 
 def test_mass_cal_offsets_select_records_and_missing_file_is_refused(tmp_path):
@@ -386,6 +548,22 @@ def test_per_scan_polynomial_must_match_default(tmp_path):
     path.write_bytes(bytes(data))
     with pytest.raises(FormatError, match="polynomial differs"):
         AgilentReader(bundle)
+
+
+def test_cli_writes_centroid_only_bundle_as_centroid_spectra(tmp_path, capsys):
+    bundle = make_bundle(tmp_path, centroid=True, chrom_scale="<f4")
+    output = tmp_path / "centroid.mzML"
+    assert main([str(bundle), "-o", str(output)]) == 0
+    captured = capsys.readouterr()
+    assert "stored centroids" in captured.err and "Wrote" in captured.out
+    spectra = list(mzml.MzML(str(output)))
+    assert all("centroid spectrum" in s and "profile spectrum" not in s for s in spectra)
+    assert all("scanWindowList" not in s["scanList"]["scan"][0] for s in spectra)
+    assert list(spectra[0]["intensity array"]) == [900, 1500, 700, 40000]
+    head = output.read_text().split("</fileContent>")[0]
+    assert 'name="centroid spectrum"' in head and 'name="profile spectrum"' not in head
+    text = output.read_text()
+    assert 'name="MSPeak.bin"' in text and 'name="MSProfile.bin"' not in text
 
 
 def test_positive_polarity_is_written(tmp_path):

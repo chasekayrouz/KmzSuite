@@ -91,7 +91,10 @@ def metadata(reader, profile="full", mass_correction=None, *, sparse_format=FORM
         cv(content, "MS:1000579", "MS1 spectrum")
     if levels - {1}:
         cv(content, "MS:1000580", "MSn spectrum")
-    cv(content, "MS:1000128", "profile spectrum")
+    if getattr(reader, "centroided", False):
+        cv(content, "MS:1000127", "centroid spectrum")
+    else:
+        cv(content, "MS:1000128", "profile spectrum")
     cv(content, "MS:1000235", "total ion current chromatogram")
     dad = getattr(reader, "dad", None)
     if dad is not None:
@@ -181,7 +184,7 @@ def metadata(reader, profile="full", mass_correction=None, *, sparse_format=FORM
 
 
 def _agilent_metadata(container, description, reader):
-    """File, software, instrument and processing description of an Agilent MassHunter conversion (Full Profile)."""
+    """File, software, instrument and processing description of an Agilent MassHunter conversion."""
     sources = ET.SubElement(description, "sourceFileList", count=str(len(reader.files)))
     for name, path in reader.files.items():
         ident = reader.source_ref if name == "MSScan.bin" else name.replace(".", "_")
@@ -281,7 +284,7 @@ def spectrum_arrays(reader, scan, profile="full", mass_correction=None, *, spars
     return mz, intensity, ref, check
 
 
-def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
+def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None, centroid=False):
     """An MS spectrum without its arrays; ``check`` is the canonical Sparse Profile check."""
     e = ET.Element("spectrum", index=str(index), id=scan.native_id, defaultArrayLength=str(length))
     if ref is not None:
@@ -292,7 +295,10 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
         cv(e, "MS:1000129", "negative scan")
     else:
         cv(e, "MS:1000130", "positive scan")
-    cv(e, "MS:1000128", "profile spectrum")
+    if centroid:
+        cv(e, "MS:1000127", "centroid spectrum")
+    else:
+        cv(e, "MS:1000128", "profile spectrum")
     cv(e, "MS:1000285", "total ion current", scan.tic)
     if check is not None:
         user(e, SAMPLING_PARAM, check)
@@ -301,10 +307,12 @@ def spectrum_element(scan, experiment, index, length, rt, ref=None, check=None):
     acq = ET.SubElement(scans, "scan")
     cv(acq, "MS:1000016", "scan start time", rt, MINUTES)
     cv(acq, "MS:1000616", "preset scan configuration", getattr(scan, "preset", scan.experiment))
-    windows = ET.SubElement(acq, "scanWindowList", count="1")
-    window = ET.SubElement(windows, "scanWindow")
-    cv(window, "MS:1000501", "scan window lower limit", experiment.lower_mz, MZ)
-    cv(window, "MS:1000500", "scan window upper limit", experiment.upper_mz, MZ)
+    if experiment.lower_mz is not None:
+        # Agilent centroid blocks record only the observed m/z range, so no window is written.
+        windows = ET.SubElement(acq, "scanWindowList", count="1")
+        window = ET.SubElement(windows, "scanWindow")
+        cv(window, "MS:1000501", "scan window lower limit", experiment.lower_mz, MZ)
+        cv(window, "MS:1000500", "scan window upper limit", experiment.upper_mz, MZ)
     if scan.precursor_mz is not None:
         precursors = ET.SubElement(e, "precursorList", count="1")
         precursor = ET.SubElement(precursors, "precursor")
@@ -333,7 +341,7 @@ def spectrum(reader, scan, index, profile="full", mass_correction=None, *, spars
                                                 sparse_format=sparse_format, selection=selection)
     rt = scan.rt_minutes if hasattr(scan, "rt_minutes") else scan.rt_seconds/60
     e = spectrum_element(scan, reader.experiments[scan.experiment-1], index, len(mz), rt,
-                         ref, None if check is None else canonical(check))
+                         ref, None if check is None else canonical(check), getattr(reader, "centroided", False))
     arrays = ET.SubElement(e, "binaryDataArrayList", count="2")
     binary_array(arrays, mz, "mz")
     binary_array(arrays, intensity, "intensity")
@@ -424,7 +432,8 @@ class Templates:
             holes = _Holes(native_id=_hole("id"), tic=_hole("tic"), experiment=scan.experiment,
                            precursor_mz=None if scan.precursor_mz is None else _hole("precursor"))
             element = spectrum_element(holes, self.reader.experiments[scan.experiment-1], _hole("index"), _hole("length"),
-                                       _hole("rt"), ref, None if check is None else _hole("check"))
+                                       _hole("rt"), ref, None if check is None else _hole("check"),
+                                       getattr(self.reader, "centroided", False))
             ET.SubElement(element, "binaryDataArrayList", count="2").text = _hole("arrays")
             template = self.spectra[key] = _Template(element, b"\n")
         values = {"index": str(index).encode(), "id": _attribute(scan.native_id), "length": str(length).encode(),
@@ -501,7 +510,8 @@ def write_mzml(reader, destination, progress=None, *, profile="full", mass_corre
         raise FileExistsError(f"Refusing to write through output symlink {destination}")
     destination = destination.resolve()
     if getattr(reader, "format_name", None) == "Agilent MassHunter":
-        # Full Profile only until other representations are qualified for Agilent data.
+        # Full Profile (or the stored centroids of centroid-only acquisitions) only until
+        # other representations are qualified for Agilent data.
         if profile != "full" or mass_correction is not None:
             raise ValueError("Agilent data supports Full Profile without mass correction only")
         if destination.is_relative_to(reader.entry):

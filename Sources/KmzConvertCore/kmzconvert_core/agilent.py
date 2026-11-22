@@ -1,12 +1,14 @@
-"""Narrow Agilent MassHunter ``.d`` reader for TOF/Q-TOF profile acquisitions.
+"""Narrow Agilent MassHunter ``.d`` reader for TOF/Q-TOF acquisitions.
 
 Clean-room decoding from the bundle's own files: ``MSScan.bin`` records are laid
 out from the bundle's ``MSScan.xsd``; ``MSProfile.bin`` blocks are raw LZF
 (MassHunter Acquisition B.0x) or run-length coded (10.x); flight times become m/z
 with ``MSMassCal.bin`` per-scan records or, without them, ``DefaultMassCal.xml``.
-Every profile spectrum must reproduce the stored TIC, base-peak intensity and
-base-peak m/z. Anything else (triple quadrupole, ion mobility, centroid-only data,
-unknown layouts) is refused. No vendor library or network access is used.
+Acquisitions without profile data are read from their ``MSPeak.bin`` centroids
+instead. Every spectrum with data must reproduce the stored TIC, base-peak
+intensity and base-peak m/z; an empty centroid block may carry a TIC only when the
+scans' blocks account for all of ``MSPeak.bin``. Anything else (triple quadrupole,
+ion mobility, unknown layouts) is refused. No vendor library or network access is used.
 """
 from __future__ import annotations
 
@@ -40,6 +42,11 @@ SUPPORTED_DEVICES = {"QTOF": "Q-TOF", "TOF": "TOF"}
 SUPPORTED_SCAN_TYPES = {1: 1, 512: 2}
 # BasePeakMZ is stored to the instrument's double precision with the default calibration.
 BASE_PEAK_PPM = 0.01
+# Stored centroid base peaks agree within 0.015 ppm (B.06.01 and 10.1 surveys); the
+# calibration errors this guards against are at the ppm level.
+CENTROID_BASE_PEAK_PPM = 0.05
+# MSProfile.bin and MSPeak.bin blocks follow a 68-byte file header.
+BLOCK_HEADER = 68
 SOURCE_FILES = ("MSScan.bin", "MSScan.xsd", "MSProfile.bin", "MSMassCal.bin", "DefaultMassCal.xml",
                 "MSTS.xml", "Devices.xml", "Contents.xml")
 LIMITATIONS = (
@@ -47,6 +54,13 @@ LIMITATIONS = (
     "parent-scan links and absolute acquisition timestamp are not decoded. "
     "Stored profile points are written with one zero-intensity neighbour on each side of signal; "
     "longer zero runs are omitted. Centroid, DAD/UV and auxiliary data are not exported."
+)
+CENTROID_LIMITATIONS = (
+    "Experimental Agilent MassHunter TOF/Q-TOF reader. This acquisition has no profile data "
+    "(MSProfile.bin is absent or empty), so spectra are the instrument's stored centroids; scans "
+    "whose records carry a TIC but no stored centroids are written as empty spectra with that TIC. "
+    "Isolation widths, activation type, parent-scan links and absolute acquisition timestamp are "
+    "not decoded. DAD/UV and auxiliary data are not exported."
 )
 
 
@@ -123,6 +137,26 @@ def record_layout(xsd):
     require({"SpectrumFormatID", "SpectrumOffset", "ByteCount", "PointCount", "UncompressedByteCount",
              "MinX", "MaxX"} <= block_names, "MSScan.xsd spectrum block lacks required fields")
     return np.dtype(fixed), np.dtype(block)
+
+
+def fit_layout(record, block, stride):
+    """(layout, spectrum blocks, narrowed): fixed fields plus one to four blocks filling ``stride``.
+
+    MassHunter B.06's MSScan.xsd declares ChromScaleFactor as xs:double, but its records
+    hold a 4-byte float, which later schemas declare (xs:float). ``narrowed`` marks that
+    reading; the caller then requires every ChromScaleFactor to be exactly 1.0, as in
+    every B.06 record seen, so another four-byte disagreement is not mistaken for it.
+    """
+    layouts = [(record, False)]
+    field = record.fields.get("ChromScaleFactor")
+    if field is not None and field[0] == np.dtype("<f8"):
+        narrowed = np.dtype([(name, "<f4" if name == "ChromScaleFactor" else kind) for name, kind in record.descr])
+        layouts.append((narrowed, True))
+    for layout, narrowed in layouts:
+        extra = stride - layout.itemsize
+        if extra > 0 and extra % block.itemsize == 0 and extra // block.itemsize <= 4:
+            return layout, extra // block.itemsize, narrowed
+    raise FormatError(f"MSScan.bin record size {stride} does not match MSScan.xsd")
 
 
 @dataclass(frozen=True)
@@ -370,14 +404,14 @@ class AgilentReader:
         require(header >= 0x5c and payload > 0 and payload % count == 0,
                 "MSScan.bin size disagrees with the MSTS.xml scan count")
         stride = payload // count
-        extra = stride - record.itemsize
-        require(extra > 0 and extra % block.itemsize == 0 and extra // block.itemsize <= 4,
-                f"MSScan.bin record size {stride} does not match MSScan.xsd")
-        layout = np.dtype(record.descr + [(f"block{i}", block) for i in range(extra // block.itemsize)])
+        record, nblocks, narrowed = fit_layout(record, block, stride)
+        layout = np.dtype(record.descr + [(f"block{i}", block) for i in range(nblocks)])
         self.records = records = np.frombuffer(data, layout, count=count, offset=header)
-        blocks = [records[f"block{i}"] for i in range(extra // block.itemsize)]
+        require(not narrowed or (records["ChromScaleFactor"] == 1).all(),
+                f"MSScan.bin record size {stride} does not match MSScan.xsd")
+        blocks = [records[f"block{i}"] for i in range(nblocks)]
         self._calibrations(files, records)
-        self._profile_file(files)
+        self._spectrum_file(files, acq)
         self._parse(records, blocks)
 
     def _device(self, path):
@@ -434,10 +468,19 @@ class AgilentReader:
         self.scan_calibration = per_scan
         self.calibration_source = "MSMassCal.bin"
 
-    def _profile_file(self, files):
+    def _spectrum_file(self, files, acq):
+        """Map MSProfile.bin, or MSPeak.bin when the acquisition saved no profile data."""
         path = files["MSProfile.bin"]
-        require(path is not None and path.stat().st_size > 68,
-                "No profile data (MSProfile.bin); centroid-only Agilent acquisitions are not supported yet")
+        self.centroided = path is None or path.stat().st_size <= BLOCK_HEADER
+        if self.centroided:
+            # A header-only MSPeak.bin is a run in which no scan kept centroids.
+            path = _child(acq, "MSPeak.bin")
+            require(path is not None and path.stat().st_size >= BLOCK_HEADER,
+                    "No spectra: the acquisition has neither profile (MSProfile.bin) nor centroid (MSPeak.bin) data")
+            # List the centroid file as the spectral source instead of an empty profile file.
+            self.files.pop("MSProfile.bin", None)
+            self.files["MSPeak.bin"] = path
+            self.limitations = CENTROID_LIMITATIONS
         self._file = path.open("rb")
         self._mapping = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
 
@@ -446,12 +489,14 @@ class AgilentReader:
         experiments = {}
         size = len(self._mapping)
         previous = -np.inf
+        wanted = CENTROID if self.centroided else PROFILE
         for i, r in enumerate(records):
             ident = f"scanId={int(r['ScanID'])}"
-            profile = [b for b in blocks if b[i]["SpectrumFormatID"] == PROFILE]
-            require(len(profile) == 1,
-                    f"{ident} has no profile spectrum; centroid-only Agilent acquisitions are not supported yet")
-            p = profile[0][i]
+            found = [b for b in blocks if b[i]["SpectrumFormatID"] == wanted]
+            require(len(found) == 1, f"{ident} has no centroid spectrum" if self.centroided else
+                    f"{ident} has no profile spectrum; acquisitions mixing profile and centroid-only scans "
+                    "are not supported")
+            p = found[0][i]
             scan_type = int(r["ScanType"])
             require(scan_type in SUPPORTED_SCAN_TYPES, f"Unsupported Agilent scan type {scan_type} at {ident}")
             level = int(r["MSLevel"])
@@ -462,7 +507,20 @@ class AgilentReader:
             require(np.isfinite(rt) and rt >= previous, f"Retention times decrease at {ident}")
             previous = rt
             offset, nbytes = int(p["SpectrumOffset"]), int(p["ByteCount"])
-            require(68 <= offset and nbytes > 0 and offset + nbytes <= size, f"Profile block out of bounds at {ident}")
+            if self.centroided:
+                # A centroid block holds PointCount flight times (float64), then their intensities (float32).
+                points = int(p["PointCount"])
+                require(points >= 0 and nbytes == 12 * points, f"Unsupported centroid block size at {ident}")
+                if points:
+                    require(BLOCK_HEADER <= offset and offset + nbytes <= size, f"Centroid block out of bounds at {ident}")
+                else:
+                    # An empty block (offset 0) may carry the TIC of centroids the instrument did not keep.
+                    tic, top = float(r["TIC"]), float(r["BasePeakValue"])
+                    require(offset == 0, f"Centroid block out of bounds at {ident}")
+                    require(np.isfinite([tic, top]).all() and 0 <= top <= tic, f"Invalid stored TIC at {ident}")
+            else:
+                require(BLOCK_HEADER <= offset and nbytes > 0 and offset + nbytes <= size,
+                        f"Profile block out of bounds at {ident}")
             fields = records.dtype.names
             ce = float(r["CollisionEnergy"])
             if level == 1:
@@ -475,8 +533,12 @@ class AgilentReader:
                 require(np.isfinite(precursor) and precursor > 0, f"Missing precursor m/z at {ident}")
                 charge = int(r["ChargeState"]) if "ChargeState" in fields else 0
                 charge = charge if charge > 0 else None
-            lower, upper = float(p["MinX"]), float(p["MaxX"])
-            require(0 < lower < upper, f"Invalid scan window at {ident}")
+            if self.centroided:
+                # Centroid blocks hold the observed m/z range, not the acquisition range.
+                lower = upper = None
+            else:
+                lower, upper = float(p["MinX"]), float(p["MaxX"])
+                require(0 < lower < upper, f"Invalid scan window at {ident}")
             key = (level, polarity, lower, upper, ce if level > 1 else None)
             if key not in experiments:
                 self.experiments.append(Experiment(level, polarity, lower, upper, 0.0, key[4], {}))
@@ -487,6 +549,17 @@ class AgilentReader:
                                    int(p["PointCount"]), int(p["UncompressedByteCount"])))
         ids = [s.scan_id for s in self.scans]
         require(len(set(ids)) == len(ids), "Duplicate MassHunter scan IDs")
+        if self.centroided:
+            # The scans' blocks must account for every MSPeak.bin byte after the header, so a
+            # scan with an empty block has no centroids anywhere in the file.
+            position = BLOCK_HEADER
+            for offset, nbytes in sorted((s.offset, s.size) for s in self.scans if s.points):
+                require(offset == position, "MSPeak.bin centroid blocks overlap or leave gaps")
+                position += nbytes
+            require(position == size, "MSPeak.bin holds data outside the scans' centroid blocks")
+            # Records that point at profile data the folder lacks (a deleted MSProfile.bin).
+            self.profile_referenced = any(
+                ((b["SpectrumFormatID"] == PROFILE) & (b["ByteCount"] > 0)).any() for b in blocks)
         self._index = {id(s): i for i, s in enumerate(self.scans)}
 
     def calibration(self, scan):
@@ -499,11 +572,37 @@ class AgilentReader:
         return self._mapping[scan.offset:scan.offset + scan.size]
 
     def decoded(self, scan):
-        """Guarded (flight time, intensity) of every stored profile point."""
+        """Guarded (flight time, intensity) of every stored profile point or centroid."""
+        if self.centroided:
+            return self._centroids(scan)
         x0, dx, y = decode_profile(self.block(scan), scan.points, scan.uncompressed)
         require(len(y) == scan.points, f"Profile point count disagrees at {scan.native_id}")
         require((y >= 0).all(), f"Negative profile intensity at {scan.native_id}")
         t = x0 + dx * np.arange(scan.points, dtype=np.float64)
+        self._check_summary(scan, t, y, BASE_PEAK_PPM)
+        return t, y
+
+    def _centroids(self, scan):
+        points = scan.points
+        if points == 0:
+            # The instrument may store a TIC for a scan whose centroids it did not keep.
+            return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
+        block = self.block(scan)
+        t = np.frombuffer(block, "<f8", points)
+        y = np.frombuffer(block, "<f4", points, 8 * points).astype(np.float64)
+        require(np.isfinite(t).all() and np.isfinite(y).all() and (y >= 0).all(),
+                f"Invalid stored centroid at {scan.native_id}")
+        try:
+            self._check_summary(scan, t, y, CENTROID_BASE_PEAK_PPM)
+        except FormatError as error:
+            if self.profile_referenced:
+                raise FormatError(f"{error} (MSProfile.bin is absent or empty although the scans "
+                                  "reference profile data)") from error
+            raise
+        return t, y
+
+    def _check_summary(self, scan, t, y, tolerance_ppm):
+        """Decoded intensities must reproduce the stored TIC, base-peak intensity and base-peak m/z."""
         total, top = float(y.sum()), float(y.max()) if len(y) else 0.0
         require(total == scan.tic, f"Decoded intensity sum disagrees with TIC: {scan.native_id}")
         require(top == scan.base_peak_intensity, f"Decoded maximum disagrees with base peak intensity: {scan.native_id}")
@@ -514,13 +613,12 @@ class AgilentReader:
             at = t[y == y.max()]
             mz = self.default_calibration[scan.calibration_id].mz(at)
             ppm = np.min(np.abs(mz - scan.base_peak_mz)) / scan.base_peak_mz * 1e6
-            require(ppm <= BASE_PEAK_PPM, f"Decoded base-peak m/z disagrees ({ppm:.3g} ppm): {scan.native_id}")
-        return t, y
+            require(ppm <= tolerance_ppm, f"Decoded base-peak m/z disagrees ({ppm:.3g} ppm): {scan.native_id}")
 
     def arrays(self, scan, framing=True):
-        """Calibrated m/z and intensity; framing keeps one zero neighbour beside each signal run."""
+        """Calibrated m/z and intensity; profile framing keeps one zero neighbour beside each signal run."""
         t, y = self.decoded(scan)
-        if framing:
+        if framing and not self.centroided:
             signal = y > 0
             keep = signal.copy()
             keep[1:] |= signal[:-1]
@@ -546,11 +644,12 @@ class AgilentReader:
                 "polarities": dict(Counter(self.experiments[s.experiment - 1].polarity for s in self.scans)),
                 "instrument": self.instrument, "software": self.acquisition_software,
                 "calibration": self.calibration_source,
+                "spectra_representation": "centroid" if self.centroided else "profile",
                 "profile_encoding": self.profile_encoding(),
-                "limitations": LIMITATIONS}
+                "limitations": self.limitations}
 
     def profile_encoding(self):
-        if not self.scans:
+        if not self.scans or self.centroided:
             return None
         first = self.scans[0]
         return "run-length" if is_run_length(self.block(first), first.points) else "LZF"

@@ -17,8 +17,8 @@ unless you choose an online search.
 
 > **Status:** research software under active development. KmzConvert supports only
 > the SCIEX X500 data layouts it has been checked against, and Agilent TOF/Q-TOF
-> profile data whose stored scan summaries it reproduces exactly (checked on a 6545
-> and a 6546); it refuses anything else.
+> profile or centroid data whose stored scan summaries it reproduces (checked on
+> 6220, 6540, 6545 and 6546 data); it refuses anything else.
 > Formula suggestions and spectral matches are leads to investigate, not
 > identifications. See [Limitations](docs/user-guide.md#limitations).
 

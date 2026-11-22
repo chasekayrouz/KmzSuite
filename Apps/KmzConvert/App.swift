@@ -150,7 +150,7 @@ struct ConvertView: View {
                 }
             }
             Toggle("Inspect metadata without converting (single file)", isOn: $model.inspect).disabled(model.running || model.isBatch)
-            Text("Experimental: qualified X500 positive-mode profile / dependent MS/MS data. Existing output files are never overwritten.")
+            Text("Experimental: qualified X500 positive-mode profile / dependent MS/MS data. Agilent folders saved without profile data are written as their stored centroids. Existing output files are never overwritten.")
                 .font(.caption).foregroundStyle(SuiteTheme.muted)
             if model.running {
                 if model.results.count > 1 {
