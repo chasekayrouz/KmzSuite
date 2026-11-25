@@ -189,7 +189,9 @@ and measures their peak height in every run.
 5. To plot EICs, click height cells (or a row's checkbox), then click **Plot EICs**
    (**Cmd+E**). Plots open in a new tab and need the original WIFF files.
 6. Click **Plot PCA** for an interactive 3D view of how features vary across runs.
-   **Cmd+click** a point to plot that feature's EICs.
+   Drag to rotate. Scroll or pinch over a group of points to zoom in on it,
+   double-click a point to center it, and Shift-drag to pan. **Cmd+click** a point
+   to plot that feature's EICs.
 7. **Export Heights as CSV** saves the table; **Export Excel** saves all four result
    sheets.
 
@@ -205,6 +207,7 @@ settings behind each value.
 | Extract EIC (KmzViewer), Plot EICs (KmzCoMet) | Cmd+E |
 | Run analysis (KmzCoMet) | Cmd+R |
 | Full view | F, Cmd+F or Cmd+0 |
+| Zoom the PCA plot (KmzCoMet) | Cmd+= or Cmd+− |
 | Previous/next scan or row | Left/Right arrow |
 | Close plot tab (KmzCoMet) | Cmd+W |
 | Copy selected cells (KmzCoMet) | Cmd+C |

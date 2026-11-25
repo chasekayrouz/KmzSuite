@@ -2,7 +2,7 @@
 import sys
 
 import numpy as np
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QToolTip, QVBoxLayout, QWidget)
@@ -15,33 +15,63 @@ from mpl_toolkits.mplot3d import proj3d
 from kmzcore.theme import BORDER, INK, MUTED, PAPER
 
 
+ZOOM_STEP = 1.15  # per wheel notch, or per 60 px of trackpad or Magic Mouse travel
+
+
 class PCACanvas(FigureCanvasQTAgg):
     point_clicked = Signal(QPointF, bool)
+    focus_requested = Signal(QPointF)
+    panned = Signal(QPointF, QPointF)
+    pinched = Signal(float, QPointF)
 
     def __init__(self, figure):
         super().__init__(figure)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
-        self._press = None
+        self._press = self._pan = None
 
     def mousePressEvent(self, event):
         self.setFocus()
+        left = event.button() == Qt.MouseButton.LeftButton
         command = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
-        self._press = (event.position(), command) if event.button() == Qt.MouseButton.LeftButton else None
-        if not (self._press and command):
+        self._press = (event.position(), command) if left else None
+        # Shift-drag pans: a trackpad or Magic Mouse has no middle button for Matplotlib's own pan.
+        shift = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        self._pan = event.position() if left and shift and not command else None
+        self.unsetCursor()
+        if self._pan is not None:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif not (self._press and command):
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if not (self._press and self._press[1]):
+        if self._pan is not None:
+            self.panned.emit(self._pan, event.position()); self._pan = event.position()
+        elif not (self._press and self._press[1]):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         press, self._press = self._press, None
-        if not (press and press[1]):
+        if self._pan is not None:
+            self._pan = None; self.unsetCursor()
+        elif not (press and press[1]):
             super().mouseReleaseEvent(event)
         if press and event.button() == Qt.MouseButton.LeftButton:
             if (event.position() - press[0]).manhattanLength() <= 4:
                 self.point_clicked.emit(event.position(), press[1])
+
+    def mouseDoubleClickEvent(self, event):
+        # The first click has already selected the point; Matplotlib would start a rotation here.
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mouseDoubleClickEvent(event)
+        elif not event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.focus_requested.emit(event.position())
+
+    def event(self, event):
+        # Matplotlib's Qt canvas ignores trackpad pinches. Qt delivers them with window-relative positions.
+        if event.type() == QEvent.Type.NativeGesture and event.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+            self.pinched.emit(event.value(), self.mapFromGlobal(event.globalPosition())); return True
+        return super().event(event)
 
 
 class PCATab(QWidget):
@@ -52,6 +82,7 @@ class PCATab(QWidget):
         self.data = data
         self._selected = None
         self._chooser = None
+        self._aim = None
         self._scatter = self._highlight = self._colorbar = None
         self._drawn = False
         layout = QVBoxLayout(self); layout.setContentsMargins(10, 8, 10, 8)
@@ -103,17 +134,23 @@ class PCATab(QWidget):
         self.readout.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.readout)
         command = 'Command' if sys.platform == 'darwin' else 'Ctrl'
-        hint = QLabel(f'Drag to rotate · scroll / right-drag to zoom · middle-drag to pan · {command}-click a point for all-sample EICs.')
+        hint = QLabel('Drag to rotate · scroll or pinch over points to zoom in on them · double-click to center · '
+                      f'Shift-drag to pan · {command}-click a point for all-sample EICs.')
         hint.setWordWrap(True); layout.addWidget(hint)
         self.canvas.point_clicked.connect(self._click)
+        self.canvas.focus_requested.connect(self._focus)
+        self.canvas.panned.connect(self._pan)
+        self.canvas.pinched.connect(lambda value, position: self._zoom(1 / max(.2, 1 + value), position))
         self.canvas.mpl_connect('motion_notify_event', self._hover)
         self.canvas.mpl_connect('scroll_event', self._scroll)
         self.canvas.mpl_connect('draw_event', lambda _: setattr(self, '_drawn', True))
         self.shortcuts = []
-        for key in ('F', 'Ctrl+F', 'Ctrl+0'):
-            shortcut = QShortcut(QKeySequence(key), self)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(self.reset_view); self.shortcuts.append(shortcut)
+        for keys, action in ((('F', 'Ctrl+F', 'Ctrl+0'), self.reset_view),
+                             (('Ctrl+=', 'Ctrl++'), lambda: self._zoom(1 / 1.5)), (('Ctrl+-',), lambda: self._zoom(1.5))):
+            for key in keys:
+                shortcut = QShortcut(QKeySequence(key), self)
+                shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+                shortcut.activated.connect(action); self.shortcuts.append(shortcut)
         self._axes_selection = [0, 1, 2]
         self._plot()
         self.reset_view()
@@ -191,41 +228,112 @@ class PCATab(QWidget):
     def _fit(self):
         if len(self.xyz):
             low, high = self.xyz.min(axis=0), self.xyz.max(axis=0)
-            center = (low + high) / 2
             extent = float((high-low).max())
-            half = extent * .6 if extent > 0 else .5
+            self._home = (low + high) / 2, extent * .6 if extent > 0 else .5, (high - low) / 2
         else:
-            center, half = np.zeros(3), .5
-        # Identical units on all axes: do not stretch tiny PCs to look important.
-        for setter, middle in zip((self.axes.set_xlim, self.axes.set_ylim, self.axes.set_zlim), center):
-            setter(middle-half, middle+half)
+            self._home = np.zeros(3), .5, np.zeros(3)
+        self._aim = None
+        self._set_view(*self._home[:2])
         self.axes.set_box_aspect((1, 1, 1))
 
     def reset_view(self):
         self.axes.view_init(elev=24, azim=-55, roll=0)
-        self._fit(); self.canvas.draw_idle()
+        self._fit()
 
-    def _scroll(self, event):
-        if event.inaxes is not self.axes:
-            return
-        factor = 1.15 ** (-np.clip(event.step, -8, 8))
-        for getter, setter in ((self.axes.get_xlim, self.axes.set_xlim),
-                               (self.axes.get_ylim, self.axes.set_ylim), (self.axes.get_zlim, self.axes.set_zlim)):
-            low, high = getter(); middle = (low+high)/2; half = (high-low)*factor/2
-            if 1e-12 < half < 1e6:
-                setter(middle-half, middle+half)
+    def _bounded(self, half):
+        return float(np.clip(half, self._home[1] * 1e-6, self._home[1]))
+
+    def _set_view(self, center, half, settle=False):
+        """Show the cube of this half-width around center; rotation pivots on its center."""
+        home, full, span = self._home
+        half = self._bounded(half)
+        # The pivot stays among the features. Zooming out settles on the full view over its last stretch.
+        reach = span * (min(1, 3 * (1 - half / full)) if settle else 1)
+        center = np.clip(center, home - reach, home + reach)
+        # Identical units on all axes: do not stretch tiny PCs to look important.
+        for setter, middle in zip((self.axes.set_xlim, self.axes.set_ylim, self.axes.set_zlim), center):
+            setter(middle-half, middle+half)
         self.canvas.draw_idle()
 
-    def projected_points(self):
-        """Rendered positions in Qt logical pixels; shared by picking and UI tests."""
-        if not len(self.xyz):
-            return np.empty((0, 3))
-        x, y, depth = proj3d.proj_transform(*self.xyz.T, self.axes.get_proj())
+    def _project(self, xyz):
+        x, y, depth = proj3d.proj_transform(*np.asarray(xyz, dtype=float).T, self.axes.get_proj())
         pixels = self.axes.transData.transform(np.column_stack((x, y))) / self.canvas.device_pixel_ratio
         pixels[:, 1] = self.canvas.height() - pixels[:, 1]
         return np.column_stack((pixels, depth))
 
-    def _hits(self, position):
+    def projected_points(self):
+        """Rendered positions in Qt logical pixels; shared by picking and UI tests."""
+        return self._project(self.xyz) if len(self.xyz) else np.empty((0, 3))
+
+    def _frame(self):
+        """View cube center and half-width, its rendered center, and the map from data offsets to (x, y, depth)."""
+        limits = np.array([self.axes.get_xlim(), self.axes.get_ylim(), self.axes.get_zlim()])
+        center, half = limits.mean(axis=1), float(np.ptp(limits, axis=1).max()) / 2
+        # The orthographic projection is affine, so three offsets give the whole map.
+        origin, *ends = self._project(np.vstack([center, center + half * np.eye(3)]))
+        return center, half, origin, (np.array(ends) - origin).T / half
+
+    def _position(self, event):
+        ratio = self.canvas.device_pixel_ratio
+        return QPointF(event.x/ratio, self.canvas.height() - event.y/ratio)
+
+    def _over_plot(self, position):
+        ratio = self.canvas.device_pixel_ratio
+        return self.axes.bbox.contains(position.x()*ratio, (self.canvas.height()-position.y())*ratio)
+
+    def _target(self, position):
+        """Where the pointer aims, at the median depth of the features under or else around it, and whether any are."""
+        center, _, origin, basis = self._frame()
+        # The median follows the group under the pointer, not a stray feature in front of it.
+        near = self._hits(position) or self._hits(position, 40)
+        depth = np.median(self.projected_points()[near, 2]) if near else origin[2]
+        aim = center + np.linalg.solve(basis, [position.x()-origin[0], position.y()-origin[1], depth-origin[2]])
+        return aim, bool(near)
+
+    def _zoom(self, factor, position=None):
+        """Scale the view cube. Zooming in homes in on the features under the pointer; otherwise the center holds."""
+        if not len(self.xyz) or (position is not None and not self._over_plot(position)):
+            return
+        center, half, *_ = self._frame()
+        scale = self._bounded(half * factor) / half
+        if position is not None and factor < 1:
+            # The target leaves the pointer as it nears the middle, so keep it until the pointer moves.
+            if self._aim is None or (position - self._aim[0]).manhattanLength() > 3:
+                aim, found = self._target(position)
+                self._aim = position, aim if found else None
+            if self._aim[1] is not None:
+                # Its offset shrinks faster than the cube, clear of the clipping faces and onto the rotation pivot.
+                center = self._aim[1] + (center - self._aim[1]) * scale**2
+        self._set_view(center, half * scale, settle=factor > 1)
+
+    def _scroll(self, event):
+        wheel = event.guiEvent
+        if wheel is None:
+            notches = event.step
+        elif wheel.phase() == Qt.ScrollPhase.ScrollMomentum:
+            return  # zooming stops with the fingers
+        else:
+            # On macOS Matplotlib's step is in pixels, 20 for one wheel notch. Qt's angle counts notches,
+            # with 60 px of trackpad or Magic Mouse travel as one.
+            notches = wheel.angleDelta().y() / 120
+        self._zoom(ZOOM_STEP ** -float(np.clip(notches, -8, 8)), self._position(event))
+
+    def _pan(self, before, after):
+        if not len(self.xyz):
+            return
+        center, half, _, basis = self._frame()
+        self._set_view(center - np.linalg.solve(basis, [after.x()-before.x(), after.y()-before.y(), 0]), half)
+
+    def _focus(self, position):
+        """Center the feature under the pointer: rotation pivots on it and zooming in closes on it."""
+        if not len(self.xyz) or not self._over_plot(position):
+            return
+        hits = self._hits(position)
+        target = self.xyz[hits[0]] if hits else self._target(position)[0]
+        self._aim = position, target
+        self._set_view(target, self._frame()[1])
+
+    def _hits(self, position, radius=8):
         if not self._drawn or not len(self.xyz):
             return []
         projected = self.projected_points()
@@ -233,7 +341,7 @@ class PCATab(QWidget):
         visible = np.ones(len(self.xyz), dtype=bool)
         for axis, bounds in enumerate((self.axes.get_xlim(), self.axes.get_ylim(), self.axes.get_zlim())):
             visible &= (self.xyz[:, axis] >= min(bounds)) & (self.xyz[:, axis] <= max(bounds))
-        indices = np.flatnonzero(visible & (distance <= 8))
+        indices = np.flatnonzero(visible & (distance <= radius))
         return sorted(indices.tolist(), key=lambda i: (distance[i], projected[i, 2], -self.data.points[i].total))
 
     def _description(self, index):
@@ -245,8 +353,7 @@ class PCATab(QWidget):
     def _hover(self, event):
         if event.inaxes is not self.axes or event.buttons:
             QToolTip.hideText(); return
-        position = QPointF(event.x/self.canvas.device_pixel_ratio,
-                           self.canvas.height()-event.y/self.canvas.device_pixel_ratio)
+        position = self._position(event)
         hits = self._hits(position)
         if hits:
             text = self._description(hits[0])

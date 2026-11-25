@@ -434,6 +434,98 @@ def test_pca_rotate_zoom_axis_swap_and_overlapping_feature_choice(app,tmp_path):
     assert rows==[1]
 
 
+def test_pca_gentle_zoom_homes_on_pointed_features_centers_pans_and_pinches(app,tmp_path):
+    import numpy as np
+    from PySide6.QtCore import QPoint,QPointF
+    from PySide6.QtGui import QKeySequence,QNativeGestureEvent,QPointingDevice,QWheelEvent
+    from PySide6.QtTest import QTest
+    from Tests.CoMet.test_pca import matrix_result
+    from kmzcomet.pca import feature_pca
+    from kmzcomet_app.pca import PCATab
+    # Four tight groups of distinct profiles around a looser middle one.
+    random=np.random.default_rng(5)
+    bases=np.array([[80.,10,5,3,2],[5,70,15,5,5],[5,5,10,70,10],[10,10,10,10,60],[20,20,20,20,20]])
+    rows=[(base*random.uniform(.97,1.03,5)*random.uniform(1,50)).tolist() for base in bases for _ in range(12)]
+    window=MainWindow(history=tmp_path/'history')
+    tab=PCATab(feature_pca(matrix_result(rows)))
+    window.tabs.setCurrentIndex(window.tabs.addTab(tab,'PCA'))
+    window.show();window.activateWindow();app.processEvents();tab.canvas.draw()
+    limits=lambda:np.array([tab.axes.get_xlim(),tab.axes.get_ylim(),tab.axes.get_zlim()])
+    width=lambda:float(np.ptp(limits()[0]))
+    middle=lambda:tab._frame()[2][:2]
+    away=lambda xyz:float(np.linalg.norm(tab._project([xyz])[0,:2]-middle()))
+    off=lambda index:away(tab.xyz[index])
+    shown=lambda members:bool(np.all((tab.xyz[members]>=limits()[:,0])&(tab.xyz[members]<=limits()[:,1])))
+    spot=lambda index:QPoint(*np.round(tab.projected_points()[index,:2]).astype(int).tolist())
+    def wheel(position,pixels,angle,phase=Qt.ScrollPhase.NoScrollPhase):
+        # As the Cocoa plugin delivers it: to the window, which finds the widget under the pointer.
+        local=QPointF(tab.canvas.mapTo(window,position))
+        QApplication.sendEvent(window.windowHandle(),QWheelEvent(local,QPointF(window.mapToGlobal(local.toPoint())),
+            QPoint(0,pixels),QPoint(0,angle),Qt.MouseButton.NoButton,Qt.KeyboardModifier.NoModifier,phase,False))
+    home=limits();angles=(tab.axes.elev,tab.axes.azim,tab.axes.roll)
+    # The group farthest from the middle of the plot, as rendered.
+    group=max(range(4),key=lambda g:off(g*12));members=np.arange(group*12,group*12+12)
+    pointer=spot(int(members[0]));aim,found=tab._target(QPointF(pointer));start=away(aim);assert found and start>60
+    # One wheel notch reaches Matplotlib as 20 pixel steps on macOS and a trackpad as raw pixels; neither may leap.
+    wheel(pointer,30,60,Qt.ScrollPhase.ScrollUpdate)
+    assert np.ptp(home[0])/width()==pytest.approx(1.15**.5)
+    wheel(pointer,300,600,Qt.ScrollPhase.ScrollMomentum);assert np.ptp(home[0])/width()==pytest.approx(1.15**.5)
+    wheel(pointer,20,120);assert np.ptp(home[0])/width()==pytest.approx(1.15**1.5)
+    for _ in range(10):wheel(pointer,20,120)
+    zoom=np.ptp(home[0])/width();assert zoom==pytest.approx(1.15**11.5)
+    # The pointed-at group stays whole, closes on the pivot in the middle and keeps equal axis scales.
+    assert shown(members) and away(aim)==pytest.approx(start/zoom)
+    assert np.ptp(limits(),axis=1)==pytest.approx(width())
+    # Zooming out backs away from the middle and settles on exactly the full view.
+    wheel(pointer,-20,-120);assert away(aim)==pytest.approx(start/zoom/1.15)
+    for _ in range(14):wheel(pointer,-20,-120)
+    assert limits()==pytest.approx(home)
+    # Over empty space the center holds.
+    grid=[QPoint(x,y) for x in range(0,tab.canvas.width(),20) for y in range(0,tab.canvas.height(),20)]
+    empty=next(p for p in grid if tab._over_plot(QPointF(p)) and not tab._hits(QPointF(p),45))
+    wheel(empty,20,120);assert width()<np.ptp(home[0]) and limits().mean(axis=1)==pytest.approx(home.mean(axis=1))
+    tab.reset_button.click();tab.canvas.draw()
+    # Double-click selects the feature and makes it the pivot without changing the scale or camera.
+    feature=int(members[5]);pointer=spot(feature)
+    # Qt delivers a real double-click as press, release, double-click, release.
+    QTest.mouseClick(tab.canvas,Qt.MouseButton.LeftButton,pos=pointer)
+    QTest.mouseDClick(tab.canvas,Qt.MouseButton.LeftButton,pos=pointer)
+    QTest.mouseRelease(tab.canvas,Qt.MouseButton.LeftButton,pos=pointer);app.processEvents()
+    assert tab._selected==feature and limits().mean(axis=1)==pytest.approx(tab.xyz[feature])
+    assert width()==pytest.approx(np.ptp(home[0])) and (tab.axes.elev,tab.axes.azim,tab.axes.roll)==angles
+    # The pointer is still where the feature was: zooming in closes on the feature, and rotation turns about it.
+    for _ in range(6):wheel(pointer,20,120)
+    assert off(feature)<.01 and width()==pytest.approx(np.ptp(home[0])/1.15**6)
+    QTest.mousePress(tab.canvas,Qt.MouseButton.LeftButton,pos=pointer)
+    QTest.mouseMove(tab.canvas,pointer+QPoint(50,30))
+    QTest.mouseRelease(tab.canvas,Qt.MouseButton.LeftButton,pos=pointer+QPoint(50,30))
+    turned=(tab.axes.elev,tab.axes.azim,tab.axes.roll);assert turned!=angles and off(feature)<.01
+    # Shift-drag pans in the screen plane; a Shift-click still selects.
+    before=tab.projected_points()[feature,:2];scale=width();grab=spot(feature)+QPoint(40,40)
+    QTest.mousePress(tab.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,grab)
+    assert tab.canvas.cursor().shape()==Qt.CursorShape.ClosedHandCursor
+    QTest.mouseMove(tab.canvas,grab+QPoint(-12,9))
+    QTest.mouseRelease(tab.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,grab+QPoint(-12,9))
+    assert tab.projected_points()[feature,:2]-before==pytest.approx([-12,9],abs=.01)
+    assert width()==pytest.approx(scale) and (tab.axes.elev,tab.axes.azim,tab.axes.roll)==turned
+    assert tab.canvas.cursor().shape()!=Qt.CursorShape.ClosedHandCursor
+    tab.canvas.draw();place=spot(int(members[7]));other=tab._hits(QPointF(place))[0];assert other!=feature
+    QTest.mouseClick(tab.canvas,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.ShiftModifier,place)
+    assert tab._selected==other and width()==pytest.approx(scale)
+    # A trackpad pinch arrives with a window-relative position.
+    local=QPointF(tab.canvas.mapTo(window,place));place=QPointF(window.mapToGlobal(local.toPoint()))
+    QApplication.sendEvent(window.windowHandle(),QNativeGestureEvent(Qt.NativeGestureType.ZoomNativeGesture,
+        QPointingDevice.primaryPointingDevice(),2,local,local,place,.25,QPointF()))
+    assert scale/width()==pytest.approx(1.25) and shown([other])
+    # Command-plus and Command-minus zoom about the center; Full view restores everything.
+    center=limits().mean(axis=1);scale=width();tab.canvas.setFocus()
+    QTest.keySequence(tab.canvas,QKeySequence('Ctrl+='));app.processEvents()
+    assert scale/width()==pytest.approx(1.5) and limits().mean(axis=1)==pytest.approx(center)
+    QTest.keySequence(tab.canvas,QKeySequence('Ctrl+-'));app.processEvents();assert width()==pytest.approx(scale)
+    QTest.keySequence(tab.canvas,QKeySequence('F'));app.processEvents()
+    assert limits()==pytest.approx(home) and (tab.axes.elev,tab.axes.azim)==(24,-55)
+
+
 def test_pca_close_during_calculation_waits_and_does_not_publish(app,result,tmp_path,monkeypatch):
     import kmzcomet_app.app as module
     entered,release=Event(),Event()
